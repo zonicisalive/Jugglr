@@ -1,0 +1,191 @@
+# Jugglr Configuration File (~/.config/jugglr/rules.toml)
+
+[global]
+debounce_ms = 500
+default_quarantine_dir = "~/.local/share/jugglr/quarantine"
+dry_run = false
+
+# ==============================================================================
+# ACTIVE DEFAULT RULES
+# ==============================================================================
+
+# Rule 1: Organize Invoices and Receipts by Year
+[[rules]]
+name = "Auto-organize Invoices and Receipts"
+watch_dir = "~/Downloads"
+enabled = true
+
+  [rules.conditions]
+  match = "all" # all (AND), any (OR), none (NOT)
+  extensions = ["pdf"]
+  content_contains = ["Invoice", "Receipt", "Total Due", "Amount Due"]
+  min_size_bytes = 1024
+
+  [rules.actions]
+  action = "move"
+  destination = "~/Documents/Finance/{year}/"
+  conflict_resolution = "rename_with_counter"
+  notify = true
+  notify_message = "Moved invoice {filename} to Finance/{year}/"
+
+# Rule 2: Security Quarantine for Deceptive Double-Extension Files
+[[rules]]
+name = "Security Quarantine for Suspicious Scripts"
+watch_dir = "~/Downloads"
+enabled = true
+
+  [rules.conditions]
+  match = "any"
+  extensions = ["sh", "py", "elf", "bin", "exe", "bat"]
+  double_extension = true
+
+  [rules.actions]
+  action = "quarantine"
+  destination = "~/.local/share/jugglr/quarantine/"
+  strip_executable = true
+  notify = true
+  alert_urgency = "critical"
+  notify_message = "🚨 Quarantined deceptive script: {filename}"
+
+# Rule 3: Strip Dangerous Executable Permissions from Downloaded Documents
+[[rules]]
+name = "Dangerous Permission Neutralizer"
+watch_dir = "~/Downloads"
+enabled = true
+
+  [rules.conditions]
+  match = "all"
+  extensions = ["pdf", "docx", "xlsx", "pptx", "png", "jpg", "jpeg"]
+  dangerous_permissions = true
+
+  [rules.actions]
+  action = "none"
+  strip_executable = true
+  notify = true
+  alert_urgency = "normal"
+  notify_message = "Stripped executable bit from document: {filename}"
+
+# Rule 4: Secret Audit & Leaked Credentials Scanner
+[[rules]]
+name = "Audit Secrets in Configuration Files"
+watch_dir = "~/Downloads"
+enabled = true
+
+  [rules.conditions]
+  match = "all"
+  extensions = ["env", "json", "toml", "yaml", "yml", "txt"]
+  contains_secrets = true
+
+  [rules.actions]
+  action = "script"
+  script = "echo '[JUGGLR SECURITY] Leaked secret identified in: '$JUGGLR_FILE"
+  secret_audit = true
+  notify = true
+  alert_urgency = "critical"
+  notify_message = "⚠️ Leaked secret or token detected in {filename}!"
+
+# Rule 5: Auto-sort Media Images
+[[rules]]
+name = "Auto-sort Media Images"
+watch_dir = "~/Downloads"
+enabled = true
+
+  [rules.conditions]
+  match = "any"
+  extensions = ["png", "jpg", "jpeg", "webp", "gif", "svg"]
+  mime_types = ["image/*"]
+
+  [rules.actions]
+  action = "move"
+  destination = "~/Pictures/Downloads/{year}-{month}/"
+  conflict_resolution = "rename_with_counter"
+  notify = false
+
+# ==============================================================================
+# OPTIONAL PRESETS (Disabled by default for safety)
+# ==============================================================================
+
+# Recipe A: Clean Old Downloads (Hazel style)
+[[rules]]
+name = "Clean Old Downloads (>14 days to Trash)"
+watch_dir = "~/Downloads"
+enabled = false # Safe default
+
+  [rules.conditions]
+  match = "all"
+  older_than_days = 14
+  extensions = ["iso", "deb", "rpm", "tar.gz", "zip"]
+
+  [rules.actions]
+  action = "trash"
+  notify = true
+  notify_message = "Moved old download {filename} to trash"
+
+# Recipe B: Auto-Unpack Incoming Archives
+[[rules]]
+name = "Auto-Unpack Archives (.zip, .tar.gz)"
+watch_dir = "~/Downloads"
+enabled = false # Safe default
+
+  [rules.conditions]
+  match = "any"
+  extensions = ["zip", "tar.gz", "tgz", "tar"]
+
+  [rules.actions]
+  action = "extract"
+  destination = "~/Downloads/{stem}/"
+  delete_archive_after_extract = true
+  notify = true
+  notify_message = "Extracted {filename} to {stem}/"
+
+# Recipe C: Auto-Sort Photos by EXIF Date & Camera (Organize style)
+[[rules]]
+name = "Auto-Sort Photos by EXIF Date & Camera"
+watch_dir = "~/Downloads"
+enabled = false # Safe default
+
+  [rules.conditions]
+  match = "any"
+  extensions = ["jpg", "jpeg", "png", "raw", "dng"]
+  has_exif = true
+
+  [rules.actions]
+  action = "move"
+  destination = "~/Pictures/Photos/{exif_year}/{camera_model}/"
+  conflict_resolution = "rename_with_counter"
+  notify = true
+
+# Recipe D: Auto-Tag & Organize Music by Artist/Album
+[[rules]]
+name = "Auto-Tag & Organize Music by Artist/Album"
+watch_dir = "~/Downloads"
+enabled = false # Safe default
+
+  [rules.conditions]
+  match = "any"
+  extensions = ["mp3", "flac", "m4a", "ogg"]
+  has_audio_tags = true
+
+  [rules.actions]
+  action = "move"
+  destination = "~/Music/{music_artist}/{music_album}/{music_track} - {music_title}.{ext}"
+  conflict_resolution = "rename_with_counter"
+  notify = true
+
+# Recipe E: Phishing .desktop Canary Quarantine
+[[rules]]
+name = "Quarantine Phishing .desktop Files"
+watch_dir = "~/Downloads"
+enabled = false # Safe default
+
+  [rules.conditions]
+  match = "all"
+  suspicious_desktop_file = true
+
+  [rules.actions]
+  action = "quarantine"
+  destination = "~/.local/share/jugglr/quarantine/"
+  strip_executable = true
+  notify = true
+  alert_urgency = "critical"
+  notify_message = "🚨 Quarantined suspicious .desktop phishing file: {filename}"
