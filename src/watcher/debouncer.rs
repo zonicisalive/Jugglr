@@ -10,6 +10,7 @@ pub struct Debouncer;
 impl Debouncer {
     /// Create a new debouncer that sends settled paths to `out_sender`.
     /// Returns the input sender to feed inotify events into.
+    /// Pure event-driven: sleeps completely when no file events are pending.
     pub fn start(
         debounce_duration: Duration,
         out_sender: mpsc::Sender<PathBuf>,
@@ -22,12 +23,14 @@ impl Debouncer {
             let mut interval = time::interval(check_interval);
 
             loop {
+                let has_pending = !pending.is_empty();
+
                 tokio::select! {
                     Some(path) = in_receiver.recv() => {
                         trace!("Debouncer registered event for {}", path.display());
                         pending.insert(path, Instant::now());
                     }
-                    _ = interval.tick() => {
+                    _ = interval.tick(), if has_pending => {
                         let now = Instant::now();
                         let mut settled = Vec::new();
 

@@ -1,6 +1,9 @@
 pub mod archive;
 pub mod audio;
 pub mod exif;
+pub mod invisible_threats;
 pub mod mime;
+pub mod signatures;
 pub mod trash;
+pub mod virustotal;
 pub mod webhook;

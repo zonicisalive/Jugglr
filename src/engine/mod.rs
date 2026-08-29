@@ -60,7 +60,11 @@ impl RuleEngine {
             }
 
             // Evaluate conditions
-            match ConditionEvaluator::evaluate(&rule.conditions, &current_path) {
+            match ConditionEvaluator::evaluate_with_vt(
+                &rule.conditions,
+                &current_path,
+                self.config.global.virustotal_api_key.as_deref(),
+            ) {
                 Ok(eval_result) => {
                     if eval_result.matched {
                         info!("🎯 Rule '{}' matched on file: {}", rule.name, current_path.display());

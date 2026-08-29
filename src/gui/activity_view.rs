@@ -43,23 +43,23 @@ impl ActivityView {
             status: status.to_string(),
             is_security,
         };
-        self.entries.insert(0, entry); // newest first
+        self.entries.insert(0, entry);
         if self.entries.len() > 500 {
             self.entries.pop();
         }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        ui.heading("⚡ Live Activity & Event Log");
+        ui.heading("Live Activity and Event Log");
         ui.label("Real-time stream of file events processed by the inotify debouncer and rule engine.");
 
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
-            ui.label("🔍 Search:");
+            ui.label("Search:");
             ui.text_edit_singleline(&mut self.filter_text);
 
-            if ui.button("🗑️ Clear Log").clicked() {
+            if ui.button("Clear Log").clicked() {
                 self.entries.clear();
             }
 
@@ -81,52 +81,52 @@ impl ActivityView {
         egui::ScrollArea::vertical()
             .id_salt("activity_scroll_area")
             .show(ui, |ui| {
-            for entry in &self.entries {
-                if !self.filter_text.is_empty() {
-                    let search = self.filter_text.to_lowercase();
-                    if !entry.filename.to_lowercase().contains(&search)
-                        && !entry.rule_name.to_lowercase().contains(&search)
-                        && !entry.action.to_lowercase().contains(&search)
-                    {
-                        continue;
-                    }
-                }
-
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let icon = if entry.is_security {
-                            "🚨"
-                        } else if entry.status == "Success" {
-                            "✅"
-                        } else {
-                            "ℹ️"
-                        };
-
-                        ui.label(RichText::new(icon).size(16.0));
-                        ui.label(RichText::new(&entry.timestamp).monospace().color(Color32::LIGHT_BLUE));
-                        ui.label(RichText::new(&entry.filename).strong());
-                        ui.label("→");
-                        ui.label(RichText::new(&entry.rule_name).italics().color(Color32::from_rgb(200, 200, 100)));
-                        ui.label(format!("[{}]", entry.action));
-
-                        if let Some(ref tgt) = entry.target {
-                            ui.label(RichText::new(format!("to {}", tgt)).color(Color32::GRAY));
+                for entry in &self.entries {
+                    if !self.filter_text.is_empty() {
+                        let search = self.filter_text.to_lowercase();
+                        if !entry.filename.to_lowercase().contains(&search)
+                            && !entry.rule_name.to_lowercase().contains(&search)
+                            && !entry.action.to_lowercase().contains(&search)
+                        {
+                            continue;
                         }
+                    }
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let status_color = if entry.status == "Success" {
-                                Color32::LIGHT_GREEN
-                            } else if entry.is_security {
-                                Color32::LIGHT_RED
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let (badge, badge_color) = if entry.is_security {
+                                ("[ALERT]", Color32::LIGHT_RED)
+                            } else if entry.status == "Success" {
+                                ("[OK]", Color32::LIGHT_GREEN)
                             } else {
-                                Color32::LIGHT_YELLOW
+                                ("[INFO]", Color32::LIGHT_BLUE)
                             };
-                            ui.label(RichText::new(&entry.status).color(status_color));
+
+                            ui.label(RichText::new(badge).strong().color(badge_color));
+                            ui.label(RichText::new(&entry.timestamp).monospace().color(Color32::LIGHT_BLUE));
+                            ui.label(RichText::new(&entry.filename).strong());
+                            ui.label("->");
+                            ui.label(RichText::new(&entry.rule_name).italics().color(Color32::from_rgb(200, 200, 100)));
+                            ui.label(format!("[{}]", entry.action));
+
+                            if let Some(ref tgt) = entry.target {
+                                ui.label(RichText::new(format!("to {}", tgt)).color(Color32::GRAY));
+                            }
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let status_color = if entry.status == "Success" {
+                                    Color32::LIGHT_GREEN
+                                } else if entry.is_security {
+                                    Color32::LIGHT_RED
+                                } else {
+                                    Color32::LIGHT_YELLOW
+                                };
+                                ui.label(RichText::new(&entry.status).color(status_color));
+                            });
                         });
                     });
-                });
-                ui.add_space(2.0);
-            }
-        });
+                    ui.add_space(2.0);
+                }
+            });
     }
 }

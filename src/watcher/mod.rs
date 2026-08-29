@@ -69,12 +69,15 @@ impl WatcherService {
             warn!("No active watch directories found in rules configuration!");
         }
 
-        // Spawn async worker task to process debounced files through the rule engine
+        // Spawn worker task to process debounced files without blocking Tokio async executor
         let engine_clone = Arc::clone(&self.engine);
         tokio::spawn(async move {
             while let Some(file_path) = settled_rx.recv().await {
-                let eng = engine_clone.read().await;
-                eng.process_file(&file_path);
+                let eng_arc = Arc::clone(&engine_clone);
+                tokio::task::spawn_blocking(move || {
+                    let eng = eng_arc.blocking_read();
+                    eng.process_file(&file_path);
+                });
             }
         });
 

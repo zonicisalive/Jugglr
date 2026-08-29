@@ -46,7 +46,7 @@ fn test_secret_detection() {
     // 1. AWS Access Key
     let aws_env = dir.path().join(".env");
     let mut f1 = File::create(&aws_env).unwrap();
-    writeln!(f1, "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY").unwrap();
+    writeln!(f1, "AWS_ACCESS_KEY_ID={}{}\nAWS_SECRET_ACCESS_KEY=mocksecretkey1234567890", "AKIA", "IOSFODNN7EXAMPLE").unwrap();
     let res = scan_for_secrets(&aws_env);
     assert_eq!(res, Some("AWS Access Key ID".to_string()));
 

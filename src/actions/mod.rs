@@ -87,8 +87,8 @@ impl ActionExecutor {
             },
         };
 
-        // 4. Send desktop notification if configured
-        if action_cfg.notify && outcome.success {
+        // 4. Send desktop notification if configured (skip if dry_run)
+        if !dry_run && action_cfg.notify && outcome.success {
             let summary = format!("Jugglr: {}", rule_name);
             let default_body = format!(
                 "{:?} on {}",
@@ -103,11 +103,13 @@ impl ActionExecutor {
             send_notification(&summary, &body, action_cfg.alert_urgency.as_deref());
         }
 
-        // 5. Send Webhook notification if configured
-        if let Some(ref wh_url) = action_cfg.webhook_url {
-            if outcome.success {
-                let msg = action_cfg.notify_message.as_deref().map(|tpl| context.interpolate(tpl));
-                send_webhook(wh_url, rule_name, &format!("{:?}", action_cfg.action), source_path, msg.as_deref());
+        // 5. Send Webhook notification if configured (skip if dry_run)
+        if !dry_run {
+            if let Some(ref wh_url) = action_cfg.webhook_url {
+                if outcome.success {
+                    let msg = action_cfg.notify_message.as_deref().map(|tpl| context.interpolate(tpl));
+                    send_webhook(wh_url, rule_name, &format!("{:?}", action_cfg.action), source_path, msg.as_deref());
+                }
             }
         }
 

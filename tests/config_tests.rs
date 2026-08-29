@@ -8,7 +8,7 @@ fn test_load_and_validate_example_config() {
     assert!(example_path.exists(), "rules.example.toml must exist");
 
     let config = load_config(example_path).expect("Failed to load example config");
-    assert_eq!(config.rules.len(), 10);
+    assert_eq!(config.rules.len(), 11);
     assert_eq!(config.global.debounce_ms, 500);
 
     let errors = validate_config(&config);

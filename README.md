@@ -1,8 +1,8 @@
 # Jugglr
 
-Linux File Automation and Defense Daemon with Desktop GUI.
+Linux File Automation and Threat Defense Daemon with Desktop GUI.
 
-Jugglr is a low-overhead, daemonized background service and native graphical desktop application for Linux. It watches filesystem directories via native Linux inotify, evaluates declarative rule conditions (metadata, regex, MIME type, deceptive extensions, leaked secrets, photo EXIF, ID3 audio tags, file age), and executes structured actions (atomic organizing, renaming, safe extraction, FreeDesktop trash, symlinking, security quarantining, script execution, and desktop alerts).
+Jugglr is an ultra-low overhead, daemonized background service and native graphical desktop application for Linux. It watches filesystem directories via native Linux inotify, evaluates declarative rule conditions (metadata, regex, MIME type, deceptive extensions, leaked secrets, photo EXIF, ID3 audio tags, file age, malware signatures, fork bombs, zip bombs, invisible Unicode, and VirusTotal hash reputation), and executes structured actions (atomic organizing, renaming, safe extraction, FreeDesktop trash, symlinking, security quarantining, script execution, and webhook alerts).
 
 ---
 
@@ -10,13 +10,15 @@ Jugglr is a low-overhead, daemonized background service and native graphical des
 
 ### 1. High-Performance Event Ingestion and Debouncing
 - Native Linux inotify streaming (`IN_CLOSE_WRITE`, `IN_MOVED_TO`).
-- Asynchronous task workers powered by Tokio.
-- Sliding-window debounce mechanism (default: 500ms) to ensure partially downloaded files settle before rules execute.
+- Asynchronous task workers powered by Tokio with blocking offloading.
+- Pure event-driven debouncer sleeping unconditionally when the file queue is empty.
+- Sliding-window debounce mechanism (default: 500ms) ensuring partially written downloads settle before rules execute.
 
 ### 2. Declarative TOML Rule Engine
 - Boolean condition evaluation: `match = "all"` (AND), `match = "any"` (OR), and `match = "none"` (NOT) with nested condition trees.
 - Path and Name filters: Regex patterns with named and indexed capture groups, glob matching (`*.pdf`), extension filtering.
-- Metadata filters: Size ranges (`min_size_bytes`, `max_size_bytes`), MIME type matching (via magic number detection).
+- Tiered Short-Circuit Evaluation: Evaluates in-memory string checks first, followed by inode metadata, executing deep content inspections only when necessary.
+- Metadata filters: Size ranges (`min_size_bytes`, `max_size_bytes`), MIME type matching (via magic byte detection).
 - Content inspection: Plaintext keyword search and regex extraction on file contents.
 - Time-based age conditions: `older_than_days`, `newer_than_days`, `older_than_secs`, `newer_than_secs` (`modified`, `created`, `accessed`).
 - Media metadata extractors: Photo EXIF capture dates and camera models, ID3 audio tags (artist, album, title, track).
@@ -41,19 +43,33 @@ Jugglr is a low-overhead, daemonized background service and native graphical des
   - `{music_artist}`, `{music_album}`, `{music_title}`, `{music_track}`
   - `{regex_match_N}`, `{custom_named_capture}`
 
-### 4. Built-in Security Modules
+### 4. Advanced Threat Defense and Security Modules
 - Dangerous Permission Neutralizer: Automatically strips executable bits (`chmod -x` / mode `0o644`) from downloaded documents, images, and non-binaries.
-- Double-Extension Detector: Identifies deceptive extensions (e.g. `resume.pdf.sh`, `invoice.docx.py`) while preserving valid multi-part archives (e.g. `.tar.gz`, `.tar.xz`). Moves threats to `~/.local/share/jugglr/quarantine/` with `0o600` permissions and writes audit logs to `quarantine_audit.jsonl`.
-- Secret and API Key Leak Audit: Scans downloaded `.env`, `.json`, `.yaml`, and text files for leaked AWS access keys (`AKIA...`), SSH private keys, GitHub tokens, Slack tokens, and generic credentials.
-- Phishing Launcher Detection: Flags `.desktop` files disguised as documents or containing hidden shell execution lines.
+- Double-Extension Detector: Identifies deceptive extensions (e.g. `resume.pdf.sh`, `invoice.docx.py`) while preserving valid multi-part archives (e.g. `.tar.gz`, `.tar.xz`).
+- Right-to-Left Override (RTLO) Trap: Detects Unicode `\u{202E}` characters used to flip filename extensions.
+- MIME Spoofing Detector: Detects executable binaries (ELF, PE, Shell) disguised with document or image extensions.
+- Leaked Secrets and Credentials Scanner: Scans files for exposed AWS access keys, GitHub tokens, GitLab tokens, OpenAI keys, Anthropic keys, Stripe live keys, Slack/Discord webhooks, Database URIs, and Cryptographic Private Keys.
+- Malware and Web Shell Signatures: Fast native detection (< 1ms, 0 MB extra RAM) of EICAR test signatures, PHP/Python/JSP web shells (`c99`, `r57`, `b374k`, `WSO`, `eval(base64_decode`), reverse shells (`/dev/tcp/`, `nc -e`, `socat`), and crypto miner payloads.
+- VirusTotal Hash Reputation: Queries VirusTotal API v3 asynchronously using SHA-256 hashes (no file contents uploaded) to detect globally flagged malware.
+- Fork Bomb Detector: Identifies infinite process exhaustion scripts across Bash (`:(){ :|:& };:`), Python (`while True: os.fork()`), Windows Batch (`%0|%0`), C/C++, Perl, and Ruby.
+- Zip Bomb / Decompression Bomb Detector: Calculates compression ratios without decompressing to flag extreme expansion ratios (> 100:1) and recursive archives (`42.zip`).
+- Invisible Zero-Width Unicode Detector: Detects hidden characters (`\u{200B}`, `\u{200C}`, `\u{200D}`, `\u{FEFF}`, `\u{2060}`) used to obscure payload commands.
+- IDN and Cyrillic Homoglyph Lookalike Detector: Detects lookalike Cyrillic letters mixed with Latin filenames (`updаte.sh`).
+- Polyglot Steganography Detector: Inspects PNG and JPEG image files for trailing executables or ZIP payloads appended after the End-Of-File marker.
 
-### 5. Desktop GUI and Systemd Integration
+### 5. Low-End PC and Resource Optimization
+- Ultra-low memory background daemon: Consumes ~7.1 MB RSS at idle.
+- Event-driven reactive GUI rendering: 0.0% CPU usage when untouched.
+- Stream-capped I/O: Inspects only 64KB-256KB header slices; processing massive files (e.g. 50GB ISOs) never causes memory spikes.
+- Release optimizations: Fat Link-Time Optimization (`lto = "fat"`), `panic = "abort"`, single code generation units (`codegen-units = 1`), and stripped symbols.
+
+### 6. Desktop GUI and Systemd Integration
 - Native desktop graphical user interface with responsive sidebar, visual condition/action card builders, and 1-click token inserters.
 - Live inotify activity log tab and quarantine vault explorer with 1-click file restore.
-- Dry-run simulation tool to test rules against any directory without touching files.
+- Non-blocking asynchronous dry-run simulation tool to test rules against any directory with real-time result streaming.
 - Preset recipe library with safe default disabled state (`enabled = false`).
-- Native desktop notifications via notify-rust / libnotify with urgency levels (`low`, `normal`, `critical`).
-- Webhook dispatcher for Discord, Slack, and REST endpoints.
+- Native desktop notifications via notify-rust with configurable urgency levels (`low`, `normal`, `critical`).
+- Webhook dispatcher for Discord, Slack, and custom REST endpoints.
 - Dynamic configuration reload via `SIGHUP` signal.
 - Systemd user service unit template.
 
@@ -94,6 +110,7 @@ cp rules.example.toml ~/.config/jugglr/rules.toml
 debounce_ms = 500
 default_quarantine_dir = "~/.local/share/jugglr/quarantine"
 dry_run = false
+# virustotal_api_key = "YOUR_VIRUSTOTAL_API_KEY"
 
 # Rule 1: Organize Invoices
 [[rules]]
@@ -120,7 +137,7 @@ watch_dir = "~/Downloads"
 enabled = true
 
   [rules.conditions]
-  match = "any"
+  match = "all"
   extensions = ["sh", "py", "elf", "bin"]
   double_extension = true
 

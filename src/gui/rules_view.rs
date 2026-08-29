@@ -1,9 +1,12 @@
+use std::path::PathBuf;
+use std::sync::mpsc;
 use egui::{Color32, RichText, Ui};
 use crate::config::schema::{ActionConfig, ActionType, ConditionGroup, ConflictResolution, MatchMode, RuleConfig};
 
 pub struct RulesView {
     pub selected_rule_index: Option<usize>,
     pub filter_search: String,
+    picker_receiver: Option<mpsc::Receiver<(usize, bool, PathBuf)>>,
 }
 
 impl RulesView {
@@ -11,15 +14,33 @@ impl RulesView {
         Self {
             selected_rule_index: Some(0),
             filter_search: String::new(),
+            picker_receiver: None,
         }
     }
 
+    pub fn has_active_picker(&self) -> bool {
+        self.picker_receiver.is_some()
+    }
+
     pub fn show(&mut self, ui: &mut Ui, rules: &mut Vec<RuleConfig>) {
+        // Poll background folder picker results without blocking UI
+        if let Some(ref rx) = self.picker_receiver {
+            if let Ok((idx, is_watch_dir, folder)) = rx.try_recv() {
+                if let Some(rule) = rules.get_mut(idx) {
+                    if is_watch_dir {
+                        rule.watch_dir = folder.to_string_lossy().to_string();
+                    } else {
+                        rule.actions.destination = Some(format!("{}/", folder.to_string_lossy()));
+                    }
+                }
+            }
+        }
+
         if rules.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(40.0);
                 ui.label(RichText::new("No rules configured.").size(18.0));
-                if ui.button("➕ Create Blank Rule").clicked() {
+                if ui.button("+ Create Blank Rule").clicked() {
                     rules.push(default_new_rule());
                     self.selected_rule_index = Some(0);
                 }
@@ -38,9 +59,9 @@ impl RulesView {
             .max_width(550.0)
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("📋 Rules");
+                    ui.heading("Rules");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("➕ Add Rule").clicked() {
+                        if ui.button("+ Add Rule").clicked() {
                             rules.push(default_new_rule());
                             self.selected_rule_index = Some(rules.len() - 1);
                         }
@@ -50,26 +71,34 @@ impl RulesView {
                 // PRESET RECIPES DROPDOWN (Safe: Loaded disabled by default)
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("preset_recipes_combo")
-                        .selected_text("✨ Add Preset Recipe...")
+                        .selected_text("+ Preset Recipes...")
                         .show_ui(ui, |ui| {
-                            if ui.selectable_label(false, "⏳ Clean Old Downloads (>14 days to Trash)").clicked() {
+                            if ui.selectable_label(false, "Clean Old Downloads (>14 days to Trash)").clicked() {
                                 rules.push(preset_clean_old_downloads());
                                 self.selected_rule_index = Some(rules.len() - 1);
                             }
-                            if ui.selectable_label(false, "📸 Auto-Sort Photos by EXIF Date & Camera").clicked() {
+                            if ui.selectable_label(false, "Auto-Sort Photos by EXIF Date & Camera").clicked() {
                                 rules.push(preset_photo_sorter());
                                 self.selected_rule_index = Some(rules.len() - 1);
                             }
-                            if ui.selectable_label(false, "🎵 Auto-Tag & Organize Music by Artist/Album").clicked() {
+                            if ui.selectable_label(false, "Auto-Tag & Organize Music by Artist/Album").clicked() {
                                 rules.push(preset_music_sorter());
                                 self.selected_rule_index = Some(rules.len() - 1);
                             }
-                            if ui.selectable_label(false, "📦 Auto-Unpack Archives (.zip, .tar.gz)").clicked() {
+                            if ui.selectable_label(false, "Auto-Unpack Archives (.zip, .tar.gz)").clicked() {
                                 rules.push(preset_auto_unpack());
                                 self.selected_rule_index = Some(rules.len() - 1);
                             }
-                            if ui.selectable_label(false, "🛡️ Phishing .desktop Canary Quarantine").clicked() {
+                            if ui.selectable_label(false, "Quarantine Phishing .desktop Files").clicked() {
                                 rules.push(preset_phishing_desktop());
+                                self.selected_rule_index = Some(rules.len() - 1);
+                            }
+                            if ui.selectable_label(false, "Quarantine Malware & Web Shells (Signatures + VirusTotal)").clicked() {
+                                rules.push(preset_malware_quarantine());
+                                self.selected_rule_index = Some(rules.len() - 1);
+                            }
+                            if ui.selectable_label(false, "Quarantine Invisible Traps & Bombs (ZipBombs, ForkBombs, Polyglots)").clicked() {
+                                rules.push(preset_invisible_traps_quarantine());
                                 self.selected_rule_index = Some(rules.len() - 1);
                             }
                         });
@@ -78,7 +107,7 @@ impl RulesView {
                 ui.add_space(2.0);
 
                 ui.horizontal(|ui| {
-                    ui.label("🔍");
+                    ui.label("Search:");
                     ui.text_edit_singleline(&mut self.filter_search);
                 });
 
@@ -125,19 +154,19 @@ impl RulesView {
                                         });
 
                                         ui.horizontal(|ui| {
-                                            ui.label(RichText::new(format!("📁 {}", &rule.watch_dir)).size(11.0).color(Color32::GRAY));
+                                            ui.label(RichText::new(format!("Watch: {}", &rule.watch_dir)).size(11.0).color(Color32::GRAY));
 
                                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                if ui.small_button("🗑").on_hover_text("Delete rule").clicked() {
+                                                if ui.small_button("Del").on_hover_text("Delete rule").clicked() {
                                                     to_delete = Some(idx);
                                                 }
-                                                if ui.small_button("📋").on_hover_text("Duplicate rule").clicked() {
+                                                if ui.small_button("Copy").on_hover_text("Duplicate rule").clicked() {
                                                     to_duplicate = Some(idx);
                                                 }
-                                                if idx + 1 < total_rules && ui.small_button("▼").clicked() {
+                                                if idx + 1 < total_rules && ui.small_button("v").on_hover_text("Move down").clicked() {
                                                     move_down = Some(idx);
                                                 }
-                                                if idx > 0 && ui.small_button("▲").clicked() {
+                                                if idx > 0 && ui.small_button("^").on_hover_text("Move up").clicked() {
                                                     move_up = Some(idx);
                                                 }
                                             });
@@ -183,7 +212,7 @@ impl RulesView {
                         .id_salt("rule_editor_scroll")
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.heading("✏️ Rule Settings");
+                                ui.heading("Rule Settings");
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     ui.checkbox(&mut rule.enabled, "Enable this rule");
                                 });
@@ -197,10 +226,15 @@ impl RulesView {
                             ui.horizontal(|ui| {
                                 ui.label("Watch Folder:");
                                 ui.text_edit_singleline(&mut rule.watch_dir);
-                                if ui.button("📁 Browse...").clicked() {
-                                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                        rule.watch_dir = folder.to_string_lossy().to_string();
-                                    }
+                                if ui.button("Browse...").clicked() {
+                                    let (tx, rx) = mpsc::channel();
+                                    self.picker_receiver = Some(rx);
+                                    let idx = self.selected_rule_index.unwrap_or(0);
+                                    std::thread::spawn(move || {
+                                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                            let _ = tx.send((idx, true, folder));
+                                        }
+                                    });
                                 }
                             });
 
@@ -212,7 +246,7 @@ impl RulesView {
                             ui.add_space(8.0);
 
                             // THEN ACTIONS CARD
-                            show_actions_card(ui, &mut rule.actions);
+                            show_actions_card(ui, &mut rule.actions, selected_idx, &mut self.picker_receiver);
                         });
                 }
             } else {
@@ -345,7 +379,56 @@ fn preset_phishing_desktop() -> RuleConfig {
             strip_executable: true,
             notify: true,
             alert_urgency: Some("critical".to_string()),
-            notify_message: Some("🚨 Quarantined suspicious .desktop phishing file: {filename}".to_string()),
+            notify_message: Some("Quarantined suspicious .desktop phishing file: {filename}".to_string()),
+            ..Default::default()
+        },
+    }
+}
+
+fn preset_malware_quarantine() -> RuleConfig {
+    RuleConfig {
+        name: "Quarantine Malware & Web Shells (Signatures + VirusTotal)".to_string(),
+        watch_dir: "~/Downloads".to_string(),
+        enabled: false, // Safe default
+        conditions: ConditionGroup {
+            match_mode: MatchMode::Any,
+            malware_signature: Some(true),
+            virustotal_min_positives: Some(3),
+            ..Default::default()
+        },
+        actions: ActionConfig {
+            action: ActionType::Quarantine,
+            destination: Some("~/.local/share/jugglr/quarantine/".to_string()),
+            strip_executable: true,
+            notify: true,
+            alert_urgency: Some("critical".to_string()),
+            notify_message: Some("Quarantined malware payload: {filename}".to_string()),
+            ..Default::default()
+        },
+    }
+}
+
+fn preset_invisible_traps_quarantine() -> RuleConfig {
+    RuleConfig {
+        name: "Quarantine Invisible Traps & Bombs (ZipBombs, ForkBombs, Polyglots)".to_string(),
+        watch_dir: "~/Downloads".to_string(),
+        enabled: false, // Safe default
+        conditions: ConditionGroup {
+            match_mode: MatchMode::Any,
+            forkbomb_detector: Some(true),
+            zipbomb_detector: Some(true),
+            invisible_unicode_detector: Some(true),
+            polyglot_payload_detector: Some(true),
+            homoglyph_detector: Some(true),
+            ..Default::default()
+        },
+        actions: ActionConfig {
+            action: ActionType::Quarantine,
+            destination: Some("~/.local/share/jugglr/quarantine/".to_string()),
+            strip_executable: true,
+            notify: true,
+            alert_urgency: Some("critical".to_string()),
+            notify_message: Some("Quarantined invisible threat or bomb: {filename}".to_string()),
             ..Default::default()
         },
     }
@@ -356,7 +439,7 @@ fn show_conditions_card(ui: &mut Ui, conditions: &mut ConditionGroup) {
         .fill(ui.visuals().window_fill())
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("🔶 IF (Conditions)").heading().color(Color32::from_rgb(255, 170, 50)));
+                ui.label(RichText::new("IF (Conditions)").heading().color(Color32::from_rgb(255, 170, 50)));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     egui::ComboBox::from_id_salt("match_mode_combo")
@@ -507,55 +590,120 @@ fn show_conditions_card(ui: &mut Ui, conditions: &mut ConditionGroup) {
             // 7. Metadata Extractors (EXIF & Audio)
             ui.horizontal(|ui| {
                 let mut has_exif_val = conditions.has_exif.unwrap_or(false);
-                if ui.checkbox(&mut has_exif_val, "📸 Require Photo EXIF Data").changed() {
+                if ui.checkbox(&mut has_exif_val, "Require Photo EXIF Data").changed() {
                     conditions.has_exif = if has_exif_val { Some(true) } else { None };
                 }
 
                 let mut has_audio_val = conditions.has_audio_tags.unwrap_or(false);
-                if ui.checkbox(&mut has_audio_val, "🎵 Require ID3 Audio Tags").changed() {
+                if ui.checkbox(&mut has_audio_val, "Require ID3 Audio Tags").changed() {
                     conditions.has_audio_tags = if has_audio_val { Some(true) } else { None };
                 }
             });
 
             ui.separator();
-            ui.label(RichText::new("🛡️ Built-in Security Conditions:").strong());
+            ui.label(RichText::new("Security Conditions:").strong());
 
             // 8. Security Evaluators
             ui.horizontal(|ui| {
                 let mut d_ext = conditions.double_extension.unwrap_or(false);
-                if ui.checkbox(&mut d_ext, "🚨 Deceptive Double-Extension (e.g. invoice.pdf.sh)").changed() {
+                if ui.checkbox(&mut d_ext, "Deceptive Double-Extension (e.g. invoice.pdf.sh)").changed() {
                     conditions.double_extension = if d_ext { Some(true) } else { None };
                 }
             });
 
             ui.horizontal(|ui| {
                 let mut d_perm = conditions.dangerous_permissions.unwrap_or(false);
-                if ui.checkbox(&mut d_perm, "🛡️ Dangerous Permissions (+x on non-binaries)").changed() {
+                if ui.checkbox(&mut d_perm, "Dangerous Permissions (+x on non-binaries)").changed() {
                     conditions.dangerous_permissions = if d_perm { Some(true) } else { None };
                 }
             });
 
             ui.horizontal(|ui| {
                 let mut d_sec = conditions.contains_secrets.unwrap_or(false);
-                if ui.checkbox(&mut d_sec, "🔑 Leaked Secret / API Key Detection (.env, private keys)").changed() {
+                if ui.checkbox(&mut d_sec, "Leaked Secret / API Key Detection (.env, private keys)").changed() {
                     conditions.contains_secrets = if d_sec { Some(true) } else { None };
                 }
             });
 
             ui.horizontal(|ui| {
                 let mut d_desktop = conditions.suspicious_desktop_file.unwrap_or(false);
-                if ui.checkbox(&mut d_desktop, "🪤 Phishing .desktop Launcher File").changed() {
+                if ui.checkbox(&mut d_desktop, "Phishing .desktop Launcher File").changed() {
                     conditions.suspicious_desktop_file = if d_desktop { Some(true) } else { None };
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut d_spoof = conditions.mime_spoofing.unwrap_or(false);
+                if ui.checkbox(&mut d_spoof, "MIME Spoofing Detection (executable binary disguised as image/PDF)").changed() {
+                    conditions.mime_spoofing = if d_spoof { Some(true) } else { None };
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut d_mal = conditions.malware_signature.unwrap_or(false);
+                if ui.checkbox(&mut d_mal, "Malware & Web Shell Signature Detection (EICAR, PHP/Python web shells, reverse shells)").changed() {
+                    conditions.malware_signature = if d_mal { Some(true) } else { None };
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut has_vt = conditions.virustotal_min_positives.is_some();
+                if ui.checkbox(&mut has_vt, "VirusTotal SHA-256 Hash Check (Flag if >= engines detect):").changed() {
+                    conditions.virustotal_min_positives = if has_vt { Some(3) } else { None };
+                }
+                if let Some(ref mut min_pos) = conditions.virustotal_min_positives {
+                    ui.add(egui::DragValue::new(min_pos).range(1..=70));
+                    ui.label(RichText::new("flagged engines").size(11.0).color(Color32::GRAY));
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut d_fork = conditions.forkbomb_detector.unwrap_or(false);
+                if ui.checkbox(&mut d_fork, "Fork Bomb Detector (:(){ :|:& };: / while True: os.fork())").changed() {
+                    conditions.forkbomb_detector = if d_fork { Some(true) } else { None };
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut d_zip = conditions.zipbomb_detector.unwrap_or(false);
+                if ui.checkbox(&mut d_zip, "Zip Bomb & Decompression Bomb Detector (>100:1 ratio, 42.zip)").changed() {
+                    conditions.zipbomb_detector = if d_zip { Some(true) } else { None };
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut d_invis = conditions.invisible_unicode_detector.unwrap_or(false);
+                if ui.checkbox(&mut d_invis, "Hidden Zero-Width Unicode Characters (Invisible payload detection)").changed() {
+                    conditions.invisible_unicode_detector = if d_invis { Some(true) } else { None };
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut d_poly = conditions.polyglot_payload_detector.unwrap_or(false);
+                if ui.checkbox(&mut d_poly, "Polyglot Stego Image Payloads (Hidden executables appended after image EOF)").changed() {
+                    conditions.polyglot_payload_detector = if d_poly { Some(true) } else { None };
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut d_homo = conditions.homoglyph_detector.unwrap_or(false);
+                if ui.checkbox(&mut d_homo, "IDN / Cyrillic Homoglyph Lookalike Character Spoofing in Filename").changed() {
+                    conditions.homoglyph_detector = if d_homo { Some(true) } else { None };
                 }
             });
         });
 }
 
-fn show_actions_card(ui: &mut Ui, action: &mut ActionConfig) {
+fn show_actions_card(
+    ui: &mut Ui,
+    action: &mut ActionConfig,
+    rule_idx: usize,
+    picker_receiver: &mut Option<mpsc::Receiver<(usize, bool, PathBuf)>>,
+) {
     egui::Frame::group(ui.style())
         .fill(ui.visuals().window_fill())
         .show(ui, |ui| {
-            ui.label(RichText::new("🔷 THEN (Actions)").heading().color(Color32::from_rgb(50, 180, 255)));
+            ui.label(RichText::new("THEN (Actions)").heading().color(Color32::from_rgb(50, 180, 255)));
             ui.separator();
 
             ui.horizontal(|ui| {
@@ -566,9 +714,9 @@ fn show_actions_card(ui: &mut Ui, action: &mut ActionConfig) {
                         ActionType::Copy => "Copy to Folder",
                         ActionType::Rename => "Rename File",
                         ActionType::Delete => "Delete Permanently",
-                        ActionType::Trash => "Move to FreeDesktop Trash 🗑️",
-                        ActionType::Extract => "Auto-Extract Archive 📦",
-                        ActionType::Symlink => "Create Symlink 🔗",
+                        ActionType::Trash => "Move to FreeDesktop Trash",
+                        ActionType::Extract => "Auto-Extract Archive",
+                        ActionType::Symlink => "Create Symlink",
                         ActionType::Hardlink => "Create Hardlink",
                         ActionType::Quarantine => "Quarantine File (0o600)",
                         ActionType::Script => "Execute Shell Script",
@@ -578,9 +726,9 @@ fn show_actions_card(ui: &mut Ui, action: &mut ActionConfig) {
                         ui.selectable_value(&mut action.action, ActionType::Move, "Move to Folder");
                         ui.selectable_value(&mut action.action, ActionType::Copy, "Copy to Folder");
                         ui.selectable_value(&mut action.action, ActionType::Rename, "Rename File");
-                        ui.selectable_value(&mut action.action, ActionType::Trash, "Move to FreeDesktop Trash 🗑️");
-                        ui.selectable_value(&mut action.action, ActionType::Extract, "Auto-Extract Archive 📦");
-                        ui.selectable_value(&mut action.action, ActionType::Symlink, "Create Symlink 🔗");
+                        ui.selectable_value(&mut action.action, ActionType::Trash, "Move to FreeDesktop Trash");
+                        ui.selectable_value(&mut action.action, ActionType::Extract, "Auto-Extract Archive");
+                        ui.selectable_value(&mut action.action, ActionType::Symlink, "Create Symlink");
                         ui.selectable_value(&mut action.action, ActionType::Hardlink, "Create Hardlink");
                         ui.selectable_value(&mut action.action, ActionType::Delete, "Delete Permanently");
                         ui.selectable_value(&mut action.action, ActionType::Quarantine, "Quarantine File (0o600)");
@@ -597,10 +745,14 @@ fn show_actions_card(ui: &mut Ui, action: &mut ActionConfig) {
                     if ui.text_edit_singleline(&mut dest_val).changed() {
                         action.destination = Some(dest_val);
                     }
-                    if ui.button("📁 Browse...").clicked() {
-                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                            action.destination = Some(format!("{}/", folder.to_string_lossy()));
-                        }
+                    if ui.button("Browse...").clicked() {
+                        let (tx, rx) = mpsc::channel();
+                        *picker_receiver = Some(rx);
+                        std::thread::spawn(move || {
+                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                let _ = tx.send((rule_idx, false, folder));
+                            }
+                        });
                     }
                 });
 
@@ -651,7 +803,7 @@ fn show_actions_card(ui: &mut Ui, action: &mut ActionConfig) {
                 }
 
                 if action.action == ActionType::Extract {
-                    ui.checkbox(&mut action.delete_archive_after_extract, "🗑️ Move archive to trash after extraction");
+                    ui.checkbox(&mut action.delete_archive_after_extract, "Move archive to trash after extraction");
                 }
             }
 
@@ -671,12 +823,12 @@ fn show_actions_card(ui: &mut Ui, action: &mut ActionConfig) {
             ui.label(RichText::new("Security, Notifications & Webhooks:").strong());
 
             ui.horizontal(|ui| {
-                ui.checkbox(&mut action.strip_executable, "🛡️ Strip Executable Permissions (chmod -x)");
-                ui.checkbox(&mut action.secret_audit, "🔑 Trigger Secret Leak Warning");
+                ui.checkbox(&mut action.strip_executable, "Strip Executable Permissions (chmod -x)");
+                ui.checkbox(&mut action.secret_audit, "Trigger Secret Leak Warning");
             });
 
             ui.horizontal(|ui| {
-                ui.checkbox(&mut action.notify, "🔔 Show Desktop Notification");
+                ui.checkbox(&mut action.notify, "Show Desktop Notification");
 
                 if action.notify {
                     ui.label("Urgency:");
@@ -693,7 +845,7 @@ fn show_actions_card(ui: &mut Ui, action: &mut ActionConfig) {
             });
 
             ui.horizontal(|ui| {
-                ui.label("🌐 Webhook URL:");
+                ui.label("Webhook URL:");
                 let mut wh_val = action.webhook_url.clone().unwrap_or_default();
                 if ui.text_edit_singleline(&mut wh_val).changed() {
                     action.webhook_url = if wh_val.is_empty() { None } else { Some(wh_val) };

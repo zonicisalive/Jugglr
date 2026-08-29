@@ -16,6 +16,8 @@ pub struct GlobalConfig {
     pub default_quarantine_dir: String,
     #[serde(default)]
     pub dry_run: bool,
+    /// Optional VirusTotal API Key for SHA-256 hash reputation checks
+    pub virustotal_api_key: Option<String>,
 }
 
 fn default_debounce_ms() -> u64 {
@@ -32,6 +34,7 @@ impl Default for GlobalConfig {
             debounce_ms: default_debounce_ms(),
             default_quarantine_dir: default_quarantine_dir(),
             dry_run: false,
+            virustotal_api_key: None,
         }
     }
 }
@@ -100,6 +103,30 @@ pub struct ConditionGroup {
 
     /// Check if file is a suspicious/phishing .desktop launcher file
     pub suspicious_desktop_file: Option<bool>,
+
+    /// Check if file extension is spoofed compared to its actual binary magic bytes
+    pub mime_spoofing: Option<bool>,
+
+    /// Check if file matches known malware, web shell, reverse shell, or exploit payload signatures
+    pub malware_signature: Option<bool>,
+
+    /// Minimum number of VirusTotal antivirus engine detections to trigger (requires virustotal_api_key)
+    pub virustotal_min_positives: Option<u32>,
+
+    /// Check if file is a fork bomb script (:(){ :|:& };: / while True: os.fork())
+    pub forkbomb_detector: Option<bool>,
+
+    /// Check if archive is a decompression zip bomb (>100:1 ratio or recursive)
+    pub zipbomb_detector: Option<bool>,
+
+    /// Check if filename or text contains hidden zero-width unicode characters
+    pub invisible_unicode_detector: Option<bool>,
+
+    /// Check if image file contains hidden polyglot payloads appended after EOF
+    pub polyglot_payload_detector: Option<bool>,
+
+    /// Check if filename contains mixed Cyrillic/Latin lookalike homoglyphs
+    pub homoglyph_detector: Option<bool>,
 
     /// File age filters (in days or seconds)
     pub older_than_days: Option<u32>,

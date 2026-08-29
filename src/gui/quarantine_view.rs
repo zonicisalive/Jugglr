@@ -47,18 +47,18 @@ impl QuarantineView {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        ui.heading("🚨 Security Quarantine Vault");
+        ui.heading("Security Quarantine Vault");
         ui.label("Files identified as deceptive (e.g. .pdf.sh) or malicious are isolated here with 0o600 permissions.");
 
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
-            if ui.button("🔄 Refresh Vault").clicked() {
+            if ui.button("Refresh Vault").clicked() {
                 self.reload();
                 self.status_msg = Some("Vault refreshed".to_string());
             }
 
-            if ui.button("📁 Open Quarantine Folder").clicked() {
+            if ui.button("Open Quarantine Folder").clicked() {
                 let q_dir = crate::config::expand_path("~/.local/share/jugglr/quarantine");
                 let _ = std::process::Command::new("xdg-open").arg(&q_dir).spawn();
             }
@@ -75,7 +75,7 @@ impl QuarantineView {
         if self.records.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(40.0);
-                ui.label(RichText::new("🛡️ No quarantined files. Your system is clean!").size(16.0).color(Color32::LIGHT_GREEN));
+                ui.label(RichText::new("No quarantined files. Your system is clean!").size(16.0).color(Color32::LIGHT_GREEN));
             });
             return;
         }
@@ -89,7 +89,7 @@ impl QuarantineView {
             for (idx, record) in self.records.iter().enumerate() {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("🚨").size(18.0));
+                        ui.label(RichText::new("[QUARANTINED]").strong().color(Color32::LIGHT_RED));
                         ui.vertical(|ui| {
                             let q_path = Path::new(&record.quarantined_path);
                             let fname = q_path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown");
@@ -104,10 +104,10 @@ impl QuarantineView {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("🗑️ Delete Permanently").clicked() {
+                            if ui.button("Delete Permanently").clicked() {
                                 record_to_delete = Some(idx);
                             }
-                            if ui.button("↩️ Restore File").clicked() {
+                            if ui.button("Restore File").clicked() {
                                 record_to_restore = Some(idx);
                             }
                         });

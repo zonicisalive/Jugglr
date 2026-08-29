@@ -35,7 +35,7 @@ watch_dir = "~/Downloads"
 enabled = true
 
   [rules.conditions]
-  match = "any"
+  match = "all"
   extensions = ["sh", "py", "elf", "bin", "exe", "bat"]
   double_extension = true
 
@@ -45,7 +45,7 @@ enabled = true
   strip_executable = true
   notify = true
   alert_urgency = "critical"
-  notify_message = "🚨 Quarantined deceptive script: {filename}"
+  notify_message = "Quarantined deceptive script: {filename}"
 
 # Rule 3: Strip Dangerous Executable Permissions from Downloaded Documents
 [[rules]]
@@ -82,7 +82,7 @@ enabled = true
   secret_audit = true
   notify = true
   alert_urgency = "critical"
-  notify_message = "⚠️ Leaked secret or token detected in {filename}!"
+  notify_message = "Leaked secret or token detected in {filename}!"
 
 # Rule 5: Auto-sort Media Images
 [[rules]]
@@ -188,4 +188,23 @@ enabled = false # Safe default
   strip_executable = true
   notify = true
   alert_urgency = "critical"
-  notify_message = "🚨 Quarantined suspicious .desktop phishing file: {filename}"
+  notify_message = "Quarantined suspicious .desktop phishing file: {filename}"
+
+# Recipe F: Quarantine Malware & Web Shells (Signatures + VirusTotal)
+[[rules]]
+name = "Quarantine Malware & Web Shells (Signatures + VirusTotal)"
+watch_dir = "~/Downloads"
+enabled = false # Safe default
+
+  [rules.conditions]
+  match = "any"
+  malware_signature = true
+  virustotal_min_positives = 3
+
+  [rules.actions]
+  action = "quarantine"
+  destination = "~/.local/share/jugglr/quarantine/"
+  strip_executable = true
+  notify = true
+  alert_urgency = "critical"
+  notify_message = "Quarantined malware payload: {filename}"

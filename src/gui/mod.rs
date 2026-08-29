@@ -36,7 +36,6 @@ pub struct JugglrApp {
 
 impl JugglrApp {
     pub fn new(cc: &eframe::CreationContext<'_>, config_path: PathBuf) -> Self {
-        // Set custom fonts or visual style
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
         let config = match load_config(&config_path) {
@@ -73,7 +72,7 @@ impl JugglrApp {
             .status();
 
         self.status_message = Some((
-            format!("✅ Saved rules to {} and reloaded daemon", self.config_path.display()),
+            format!("Saved rules to {} and reloaded daemon", self.config_path.display()),
             Instant::now(),
         ));
 
@@ -86,24 +85,24 @@ impl eframe::App for JugglrApp {
         egui::TopBottomPanel::top("header_panel").show(ctx, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("⚡ Jugglr").size(20.0).strong().color(Color32::from_rgb(0, 200, 255)));
+                ui.label(RichText::new("Jugglr").size(20.0).strong().color(Color32::from_rgb(0, 200, 255)));
                 ui.label(RichText::new("Linux File Automation & Defense").italics().color(Color32::GRAY));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("💾 Save Rules & Apply").clicked() {
+                    if ui.button("Save Rules & Apply").clicked() {
                         if let Err(e) = self.save_config() {
-                            self.status_message = Some((format!("❌ Save failed: {}", e), Instant::now()));
+                            self.status_message = Some((format!("Save failed: {}", e), Instant::now()));
                         }
                     }
 
-                    if ui.button("🧪 Test on Folder").clicked() {
+                    if ui.button("Test on Folder").clicked() {
                         self.active_tab = Tab::Tester;
                     }
 
                     let watch_badge = if self.is_watching {
-                        RichText::new("🟢 Active").color(Color32::LIGHT_GREEN)
+                        RichText::new("[Active]").color(Color32::LIGHT_GREEN)
                     } else {
-                        RichText::new("⏸️ Paused").color(Color32::LIGHT_YELLOW)
+                        RichText::new("[Paused]").color(Color32::LIGHT_YELLOW)
                     };
 
                     if ui.button(watch_badge).on_hover_text("Toggle background monitoring").clicked() {
@@ -114,12 +113,20 @@ impl eframe::App for JugglrApp {
 
             ui.add_space(4.0);
 
-            // Tab bar
+            // Tab bar & API key
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.active_tab, Tab::Rules, "📝 Rules Editor");
-                ui.selectable_value(&mut self.active_tab, Tab::Activity, format!("⚡ Live Activity ({})", self.activity_view.entries.len()));
-                ui.selectable_value(&mut self.active_tab, Tab::Quarantine, format!("🚨 Quarantine Vault ({})", self.quarantine_view.records.len()));
-                ui.selectable_value(&mut self.active_tab, Tab::Tester, "🧪 Dry-Run Simulator");
+                ui.selectable_value(&mut self.active_tab, Tab::Rules, "Rules Editor");
+                ui.selectable_value(&mut self.active_tab, Tab::Activity, format!("Live Activity ({})", self.activity_view.entries.len()));
+                ui.selectable_value(&mut self.active_tab, Tab::Quarantine, format!("Quarantine Vault ({})", self.quarantine_view.records.len()));
+                ui.selectable_value(&mut self.active_tab, Tab::Tester, "Dry-Run Simulator");
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut vt_key = self.config.global.virustotal_api_key.clone().unwrap_or_default();
+                    ui.label("VirusTotal API Key:");
+                    if ui.add(egui::TextEdit::singleline(&mut vt_key).password(true).hint_text("Paste VT Key...")).changed() {
+                        self.config.global.virustotal_api_key = if vt_key.trim().is_empty() { None } else { Some(vt_key.trim().to_string()) };
+                    }
+                });
             });
 
             ui.add_space(4.0);
@@ -150,6 +157,13 @@ impl eframe::App for JugglrApp {
                 }
             }
         });
+
+        // Request repaint only if simulator or folder picker is running, or toast is active, otherwise sleep
+        if self.tester_state.is_running || self.rules_view.has_active_picker() || self.tester_state.has_active_picker() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        } else if self.status_message.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
     }
 }
 
