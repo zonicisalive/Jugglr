@@ -97,9 +97,35 @@ enabled = true
 
   [rules.actions]
   action = "move"
-  destination = "~/Pictures/Downloads/{year}-{month}/"
+  destination = "~/Downloads/Pictures/"
   conflict_resolution = "rename_with_counter"
   notify = false
+
+# Rule 6: Auto-sort Archive Files (.zip, .tar.gz, .7z, etc.)
+[[rules]]
+name = "Auto-sort Archive Files"
+watch_dir = "~/Downloads"
+enabled = true
+
+  [rules.conditions]
+  match = "any"
+  extensions = ["zip", "tar.gz", "tgz", "tar.xz", "tar.bz2", "7z", "rar", "tar.zst", "tar", "gz"]
+  mime_types = [
+    "application/zip",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-bzip2",
+    "application/x-xz",
+    "application/x-7z-compressed",
+    "application/x-rar",
+  ]
+
+  [rules.actions]
+  action = "move"
+  destination = "~/Downloads/Archives/"
+  conflict_resolution = "rename_with_counter"
+  notify = true
+  notify_message = "Moved archive {filename} to Archives/"
 
 # ==============================================================================
 # OPTIONAL PRESETS (Disabled by default for safety)

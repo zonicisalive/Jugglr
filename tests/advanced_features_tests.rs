@@ -15,13 +15,13 @@ use jugglr::utils::mime::detect_mime_spoofing;
 fn test_advanced_rules_example_validation() {
     let example_path = Path::new("rules.example.toml");
     let config = load_config(example_path).expect("Failed to load rules.example.toml");
-    assert_eq!(config.rules.len(), 11);
+    assert_eq!(config.rules.len(), 12);
 
     let errors = validate_config(&config);
     assert!(errors.is_empty(), "Validation errors: {:?}", errors);
 
-    // Verify all 5 new presets are disabled by default for safety
-    let disabled_presets = config.rules.iter().skip(5);
+    // Verify all 6 preset recipes are disabled by default for safety
+    let disabled_presets = config.rules.iter().skip(6);
     for rule in disabled_presets {
         assert!(!rule.enabled, "Preset rule '{}' must be disabled by default for safety!", rule.name);
     }

@@ -45,10 +45,10 @@ pub fn detect_mime(path: &Path) -> io::Result<String> {
         return Ok("application/zstd".to_string());
     }
 
-    // 3. Try shebang inspection for text scripts
+    // 3. Try shebang inspection for text and zipapp scripts
     if slice.starts_with(b"#!") {
-        if let Ok(shebang) = std::str::from_utf8(&slice[..bytes_read.min(256)]) {
-            let first_line = shebang.lines().next().unwrap_or("");
+        let first_line_bytes = slice.split(|&b| b == b'\n').next().unwrap_or(&[]);
+        if let Ok(first_line) = std::str::from_utf8(first_line_bytes) {
             if first_line.contains("python") {
                 return Ok("text/x-python".to_string());
             } else if first_line.contains("sh") || first_line.contains("bash") || first_line.contains("zsh") || first_line.contains("dash") {
