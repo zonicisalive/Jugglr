@@ -38,6 +38,10 @@ struct Cli {
     #[arg(long)]
     validate: bool,
 
+    /// Batch scan and process existing files in a directory
+    #[arg(short, long, value_name = "DIR")]
+    scan: Option<PathBuf>,
+
     /// Enable verbose / debug logging
     #[arg(short, long)]
     verbose: bool,
@@ -72,6 +76,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::process::exit(1);
             }
         }
+    }
+
+    // If --scan flag is passed to process existing files
+    if let Some(scan_dir) = cli.scan {
+        let scan_path = jugglr::config::expand_path(&scan_dir.to_string_lossy());
+        if !scan_path.exists() || !scan_path.is_dir() {
+            eprintln!("Error: Target directory does not exist: {}", scan_path.display());
+            std::process::exit(1);
+        }
+
+        let mut config = match load_config(&config_path) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("Error loading config from {}: {}", config_path.display(), e);
+                std::process::exit(1);
+            }
+        };
+
+        if cli.dry_run {
+            config.global.dry_run = true;
+            println!("🔍 Running in DRY-RUN mode (no files will be moved or modified)");
+        }
+
+        println!("⚡ Processing existing files in: {}", scan_path.display());
+        let engine = RuleEngine::new(config);
+        let mut processed_count = 0;
+        let mut matched_count = 0;
+
+        if let Ok(entries) = std::fs::read_dir(&scan_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    processed_count += 1;
+                    let outcomes = engine.process_file(&path);
+                    if !outcomes.is_empty() {
+                        matched_count += 1;
+                        let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown");
+                        for outcome in outcomes {
+                            println!("  [MATCH] {} -> {:?}", fname, outcome.action_type);
+                            if let Some(ref target) = outcome.target_path {
+                                println!("          Destination: {}", target.display());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("✅ Scan complete: {} files inspected, {} matched rules.", processed_count, matched_count);
+        return Ok(());
     }
 
     // Default to GUI if not in daemon / dry-run mode

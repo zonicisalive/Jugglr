@@ -375,7 +375,7 @@ fn preset_phishing_desktop() -> RuleConfig {
         },
         actions: ActionConfig {
             action: ActionType::Quarantine,
-            destination: Some("~/.local/share/jugglr/quarantine/".to_string()),
+            destination: Some("~/Downloads/quarantine/".to_string()),
             strip_executable: true,
             notify: true,
             alert_urgency: Some("critical".to_string()),
@@ -398,7 +398,7 @@ fn preset_malware_quarantine() -> RuleConfig {
         },
         actions: ActionConfig {
             action: ActionType::Quarantine,
-            destination: Some("~/.local/share/jugglr/quarantine/".to_string()),
+            destination: Some("~/Downloads/quarantine/".to_string()),
             strip_executable: true,
             notify: true,
             alert_urgency: Some("critical".to_string()),
@@ -424,7 +424,7 @@ fn preset_invisible_traps_quarantine() -> RuleConfig {
         },
         actions: ActionConfig {
             action: ActionType::Quarantine,
-            destination: Some("~/.local/share/jugglr/quarantine/".to_string()),
+            destination: Some("~/Downloads/quarantine/".to_string()),
             strip_executable: true,
             notify: true,
             alert_urgency: Some("critical".to_string()),

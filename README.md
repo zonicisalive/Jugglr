@@ -83,12 +83,19 @@ Jugglr is an ultra-low overhead, daemonized background service and native graphi
 
 ### Build from Source
 ```bash
-git clone https://github.com/example/jugglr.git
-cd jugglr
+git clone https://github.com/ZonicExists/Jugglr.git
+cd Jugglr
 cargo build --release
 
 # Install binary to ~/.cargo/bin
 cargo install --path .
+
+# Install Desktop Launcher and Application Icon
+mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
+cp assets/jugglr.desktop ~/.local/share/applications/
+cp assets/icons/jugglr.svg ~/.local/share/icons/hicolor/scalable/apps/
+update-desktop-database ~/.local/share/applications || true
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor || true
 ```
 
 ---

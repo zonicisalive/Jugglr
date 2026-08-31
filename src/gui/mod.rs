@@ -150,7 +150,7 @@ impl eframe::App for JugglrApp {
                     self.activity_view.show(ui);
                 }
                 Tab::Quarantine => {
-                    self.quarantine_view.show(ui);
+                    self.quarantine_view.show(ui, &self.config.global.default_quarantine_dir);
                 }
                 Tab::Tester => {
                     self.tester_state.show(ui, &self.config);

@@ -2,7 +2,7 @@
 
 [global]
 debounce_ms = 500
-default_quarantine_dir = "~/.local/share/jugglr/quarantine"
+default_quarantine_dir = "~/Downloads/quarantine"
 dry_run = false
 
 # ==============================================================================
@@ -41,7 +41,7 @@ enabled = true
 
   [rules.actions]
   action = "quarantine"
-  destination = "~/.local/share/jugglr/quarantine/"
+  destination = "~/Downloads/quarantine/"
   strip_executable = true
   notify = true
   alert_urgency = "critical"
@@ -184,7 +184,7 @@ enabled = false # Safe default
 
   [rules.actions]
   action = "quarantine"
-  destination = "~/.local/share/jugglr/quarantine/"
+  destination = "~/Downloads/quarantine/"
   strip_executable = true
   notify = true
   alert_urgency = "critical"
@@ -203,7 +203,7 @@ enabled = false # Safe default
 
   [rules.actions]
   action = "quarantine"
-  destination = "~/.local/share/jugglr/quarantine/"
+  destination = "~/Downloads/quarantine/"
   strip_executable = true
   notify = true
   alert_urgency = "critical"

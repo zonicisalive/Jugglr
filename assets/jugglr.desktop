@@ -1,0 +1,21 @@
+[Desktop Entry]
+Name=Jugglr
+GenericName=File Automation & Threat Defense
+Comment=Automate file organization, threat quarantine, and desktop workflows
+Exec=jugglr
+Icon=jugglr
+Terminal=false
+Type=Application
+Categories=Utility;FileTools;System;
+Keywords=file;organize;automation;defense;security;quarantine;hazel;juggler;
+StartupNotify=true
+StartupWMClass=jugglr
+Actions=Daemon;Quarantine;
+
+[Desktop Action Daemon]
+Name=Start Background Daemon
+Exec=jugglr --daemon
+
+[Desktop Action Quarantine]
+Name=Open Quarantine Directory
+Exec=sh -c "xdg-open \\$HOME/.local/share/jugglr/quarantine"

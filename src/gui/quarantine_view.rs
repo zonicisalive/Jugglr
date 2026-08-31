@@ -25,20 +25,28 @@ impl QuarantineView {
             selected_record: None,
             status_msg: None,
         };
-        view.reload();
+        view.reload("~/Downloads/quarantine");
         view
     }
 
-    pub fn reload(&mut self) {
+    pub fn reload(&mut self, default_dir: &str) {
         self.records.clear();
-        let q_dir = crate::config::expand_path("~/.local/share/jugglr/quarantine");
-        let audit_log = q_dir.join("quarantine_audit.jsonl");
+        let target_dirs = [
+            crate::config::expand_path(default_dir),
+            crate::config::expand_path("~/Downloads/quarantine"),
+            crate::config::expand_path("~/.local/share/jugglr/quarantine"),
+        ];
 
-        if audit_log.exists() {
-            if let Ok(content) = fs::read_to_string(&audit_log) {
-                for line in content.lines() {
-                    if let Ok(rec) = serde_json::from_str::<QuarantineRecord>(line) {
-                        self.records.push(rec);
+        for q_dir in &target_dirs {
+            let audit_log = q_dir.join("quarantine_audit.jsonl");
+            if audit_log.exists() {
+                if let Ok(content) = fs::read_to_string(&audit_log) {
+                    for line in content.lines() {
+                        if let Ok(rec) = serde_json::from_str::<QuarantineRecord>(line) {
+                            if !self.records.iter().any(|r| r.quarantined_path == rec.quarantined_path) {
+                                self.records.push(rec);
+                            }
+                        }
                     }
                 }
             }
@@ -46,20 +54,21 @@ impl QuarantineView {
         self.records.reverse(); // Most recent first
     }
 
-    pub fn show(&mut self, ui: &mut Ui) {
+    pub fn show(&mut self, ui: &mut Ui, default_dir: &str) {
         ui.heading("Security Quarantine Vault");
-        ui.label("Files identified as deceptive (e.g. .pdf.sh) or malicious are isolated here with 0o600 permissions.");
+        ui.label("Files identified as deceptive (e.g. .pdf.sh) or malicious are safely isolated with 0o600 permissions.");
 
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
             if ui.button("Refresh Vault").clicked() {
-                self.reload();
+                self.reload(default_dir);
                 self.status_msg = Some("Vault refreshed".to_string());
             }
 
             if ui.button("Open Quarantine Folder").clicked() {
-                let q_dir = crate::config::expand_path("~/.local/share/jugglr/quarantine");
+                let q_dir = crate::config::expand_path(default_dir);
+                let _ = fs::create_dir_all(&q_dir);
                 let _ = std::process::Command::new("xdg-open").arg(&q_dir).spawn();
             }
 
@@ -129,7 +138,7 @@ impl QuarantineView {
                         self.status_msg = Some(format!("Restored to {}", dest.display()));
                     }
                 }
-                self.reload();
+                self.reload(default_dir);
             }
 
             if let Some(idx) = record_to_delete {
@@ -139,7 +148,7 @@ impl QuarantineView {
                     let _ = fs::remove_file(&src);
                 }
                 self.status_msg = Some("Quarantined file deleted permanently".to_string());
-                self.reload();
+                self.reload(default_dir);
             }
         });
     }

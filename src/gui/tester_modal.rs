@@ -207,7 +207,34 @@ impl TesterState {
             return;
         }
 
-        ui.label(format!("Simulated {} file(s):", self.results.len()));
+        let matched_count = self.results.iter().filter(|r| r.matched_rule.is_some()).count();
+        ui.horizontal(|ui| {
+            ui.label(format!("Simulated {} file(s) ({} matched active rules):", self.results.len(), matched_count));
+
+            if matched_count > 0 && !self.is_running {
+                if let Some(ref folder) = self.target_folder {
+                    if ui.button(RichText::new("⚡ Apply & Organize Matched Files Now").color(Color32::from_rgb(50, 220, 100)).strong()).clicked() {
+                        let folder_clone = folder.clone();
+                        let config_clone = config.clone();
+                        let f_recheck = folder.clone();
+                        let cfg_recheck = config.clone();
+                        std::thread::spawn(move || {
+                            let engine = crate::engine::RuleEngine::new(config_clone);
+                            if let Ok(entries) = fs::read_dir(&folder_clone) {
+                                for entry in entries.flatten() {
+                                    let p = entry.path();
+                                    if p.is_file() {
+                                        engine.process_file(&p);
+                                    }
+                                }
+                            }
+                        });
+                        self.results.clear();
+                        self.start_simulation(f_recheck, cfg_recheck);
+                    }
+                }
+            }
+        });
         ui.add_space(4.0);
 
         egui::ScrollArea::vertical()

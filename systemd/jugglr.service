@@ -1,6 +1,6 @@
 [Unit]
 Description=Jugglr - Linux File Automation & Defense Daemon
-Documentation=https://github.com/example/jugglr
+Documentation=https://github.com/ZonicExists/Jugglr
 After=network.target local-fs.target
 
 [Service]
@@ -8,15 +8,8 @@ Type=simple
 ExecStart=%h/.cargo/bin/jugglr --daemon
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
-RestartSec=5s
+RestartSec=3s
 Environment="RUST_LOG=info"
-
-# Security & Sandboxing hardening
-ProtectSystem=full
-ProtectHome=read-only
-# Allow write access to watched directories and target locations
-ReadWritePaths=%h/Downloads %h/Documents %h/Pictures %h/.local/share/jugglr
-NoNewPrivileges=true
 
 [Install]
 WantedBy=default.target

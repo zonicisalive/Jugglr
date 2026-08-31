@@ -25,7 +25,7 @@ fn default_debounce_ms() -> u64 {
 }
 
 fn default_quarantine_dir() -> String {
-    "~/.local/share/jugglr/quarantine".to_string()
+    "~/Downloads/quarantine".to_string()
 }
 
 impl Default for GlobalConfig {
