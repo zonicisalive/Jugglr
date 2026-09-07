@@ -23,17 +23,29 @@ impl RulesView {
     }
 
     pub fn show(&mut self, ui: &mut Ui, rules: &mut Vec<RuleConfig>) {
-        // Poll background folder picker results without blocking UI
+        // Poll background folder picker results without blocking UI.
+        // The receiver must be dropped once the picker thread is done — whether it delivered a
+        // folder or the user cancelled and it exited without sending. Leaving it in place keeps
+        // `has_active_picker()` true forever, which pins the window at a 20 fps repaint.
+        let mut picker_finished = false;
         if let Some(ref rx) = self.picker_receiver {
-            if let Ok((idx, is_watch_dir, folder)) = rx.try_recv() {
-                if let Some(rule) = rules.get_mut(idx) {
-                    if is_watch_dir {
-                        rule.watch_dir = folder.to_string_lossy().to_string();
-                    } else {
-                        rule.actions.destination = Some(format!("{}/", folder.to_string_lossy()));
+            match rx.try_recv() {
+                Ok((idx, is_watch_dir, folder)) => {
+                    if let Some(rule) = rules.get_mut(idx) {
+                        if is_watch_dir {
+                            rule.watch_dir = folder.to_string_lossy().to_string();
+                        } else {
+                            rule.actions.destination = Some(format!("{}/", folder.to_string_lossy()));
+                        }
                     }
+                    picker_finished = true;
                 }
+                Err(mpsc::TryRecvError::Disconnected) => picker_finished = true,
+                Err(mpsc::TryRecvError::Empty) => {}
             }
+        }
+        if picker_finished {
+            self.picker_receiver = None;
         }
 
         if rules.is_empty() {

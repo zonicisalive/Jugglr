@@ -64,6 +64,11 @@ impl JugglrApp {
         let toml_str = toml::to_string_pretty(&self.config)?;
         fs::write(&self.config_path, toml_str)?;
 
+        // The rules file stores the VirusTotal API key in plaintext, so it must not be
+        // world-readable the way a default-umask write would leave it.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.config_path, fs::Permissions::from_mode(0o600));
+
         // Send SIGHUP to background daemon if running to live-reload rules
         let _ = std::process::Command::new("pkill")
             .arg("-HUP")
@@ -131,15 +136,37 @@ impl eframe::App for JugglrApp {
 
             ui.add_space(4.0);
 
-            // Status message toast
-            if let Some((ref msg, timestamp)) = self.status_message {
-                if timestamp.elapsed().as_secs() < 6 {
-                    ui.label(RichText::new(msg).color(Color32::LIGHT_BLUE));
-                }
+            // Status message toast. Clearing it once it expires matters: `update` below keeps
+            // requesting repaints while a message is present, so a toast that never expires
+            // means the window never idles.
+            let toast_expired = self
+                .status_message
+                .as_ref()
+                .is_some_and(|(_, timestamp)| timestamp.elapsed().as_secs() >= 6);
+            if toast_expired {
+                self.status_message = None;
+            }
+            if let Some((ref msg, _)) = self.status_message {
+                ui.label(RichText::new(msg).color(Color32::LIGHT_BLUE));
             }
 
             ui.add_space(2.0);
         });
+
+        // Actions performed by the Tester's "Apply & Organize" run land in the Activity tab.
+        // Drained here rather than inside the Tester tab so entries keep arriving while the
+        // user is looking at another tab.
+        for applied in self.tester_state.drain_applied() {
+            let is_security = applied.action == "Quarantine" || applied.action == "Delete";
+            self.activity_view.add_entry(
+                &applied.filename,
+                &applied.rule_name,
+                &applied.action,
+                applied.target.as_deref(),
+                &applied.status,
+                is_security,
+            );
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.active_tab {
@@ -159,7 +186,11 @@ impl eframe::App for JugglrApp {
         });
 
         // Request repaint only if simulator or folder picker is running, or toast is active, otherwise sleep
-        if self.tester_state.is_running || self.rules_view.has_active_picker() || self.tester_state.has_active_picker() {
+        if self.tester_state.is_running
+            || self.tester_state.has_pending_applied()
+            || self.rules_view.has_active_picker()
+            || self.tester_state.has_active_picker()
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         } else if self.status_message.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));

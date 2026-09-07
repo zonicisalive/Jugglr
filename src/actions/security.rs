@@ -51,11 +51,10 @@ pub fn quarantine_file(
     fs::create_dir_all(quarantine_dir)?;
     let _ = fs::set_permissions(quarantine_dir, Permissions::from_mode(0o700));
 
-    // Move file atomically or copy+remove
-    if let Err(_) = fs::rename(source_path, &target_path) {
-        fs::copy(source_path, &target_path)?;
-        let _ = fs::remove_file(source_path);
-    }
+    // Move into quarantine without ever leaving a partially written file behind: a truncated
+    // copy of a malicious file under its quarantine name is both a corrupt artifact and a
+    // misleading audit record.
+    super::move_file_atomic(source_path, &target_path)?;
 
     // Restrict permissions on quarantined file to 0o600 (owner read/write only, no exec)
     let _ = fs::set_permissions(&target_path, Permissions::from_mode(0o600));

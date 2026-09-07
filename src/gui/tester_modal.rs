@@ -23,17 +23,56 @@ pub enum SimMessage {
     Finished,
 }
 
+/// One action the "Apply & Organize" run actually performed, on its way to the Activity tab.
+pub struct AppliedAction {
+    pub filename: String,
+    pub rule_name: String,
+    pub action: String,
+    pub target: Option<String>,
+    pub status: String,
+}
+
 pub struct TesterState {
     pub target_folder: Option<PathBuf>,
     pub is_running: bool,
     pub results: Vec<SimulationResult>,
     receiver: Option<Receiver<SimMessage>>,
     picker_receiver: Option<Receiver<Option<PathBuf>>>,
+    applied_receiver: Option<Receiver<AppliedAction>>,
 }
 
 impl TesterState {
     pub fn has_active_picker(&self) -> bool {
         self.picker_receiver.is_some()
+    }
+
+    /// Take everything the last "Apply & Organize" run has performed so far.
+    pub fn drain_applied(&mut self) -> Vec<AppliedAction> {
+        let mut drained = Vec::new();
+        let mut finished = false;
+
+        if let Some(ref rx) = self.applied_receiver {
+            loop {
+                match rx.try_recv() {
+                    Ok(applied) => drained.push(applied),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        finished = true;
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                }
+            }
+        }
+
+        if finished {
+            self.applied_receiver = None;
+        }
+
+        drained
+    }
+
+    pub fn has_pending_applied(&self) -> bool {
+        self.applied_receiver.is_some()
     }
 }
 
@@ -45,6 +84,7 @@ impl Default for TesterState {
             results: Vec::new(),
             receiver: None,
             picker_receiver: None,
+            applied_receiver: None,
         }
     }
 }
@@ -100,7 +140,9 @@ impl TesterState {
                                         let ctx = ContextVariables::from_file(&path, mime.as_deref(), None, Some(&eval.captures));
 
                                         if let Some(ref dest_tpl) = rule.actions.destination {
-                                            target_dest = Some(ctx.interpolate(dest_tpl));
+                                            // Same interpolation the action will use, so the
+                                            // preview shows the path that will really be written.
+                                            target_dest = Some(ctx.interpolate_path(dest_tpl));
                                         }
 
                                         break;
@@ -218,13 +260,35 @@ impl TesterState {
                         let config_clone = config.clone();
                         let f_recheck = folder.clone();
                         let cfg_recheck = config.clone();
+                        let (applied_tx, applied_rx) = channel::<AppliedAction>();
+                        self.applied_receiver = Some(applied_rx);
                         std::thread::spawn(move || {
                             let engine = crate::engine::RuleEngine::new(config_clone);
                             if let Ok(entries) = fs::read_dir(&folder_clone) {
                                 for entry in entries.flatten() {
                                     let p = entry.path();
                                     if p.is_file() {
-                                        engine.process_file(&p);
+                                        let filename = p
+                                            .file_name()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or("unknown")
+                                            .to_string();
+                                        for outcome in engine.process_file_with(&p, false) {
+                                            let _ = applied_tx.send(AppliedAction {
+                                                filename: filename.clone(),
+                                                rule_name: outcome.rule_name.clone(),
+                                                action: format!("{:?}", outcome.action_type),
+                                                target: outcome
+                                                    .target_path
+                                                    .as_ref()
+                                                    .map(|t| t.display().to_string()),
+                                                status: if outcome.success {
+                                                    "Success".to_string()
+                                                } else {
+                                                    outcome.message.clone()
+                                                },
+                                            });
+                                        }
                                     }
                                 }
                             }

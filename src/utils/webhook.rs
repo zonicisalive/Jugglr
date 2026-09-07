@@ -28,7 +28,7 @@ pub fn send_webhook(
                 "fields": [
                     { "name": "File", "value": filename, "inline": true },
                     { "name": "Rule", "value": rule_name, "inline": true },
-                    { "name": "SHA-256", "value": &sha256[..sha256.len().min(16)], "inline": false }
+                    { "name": "SHA-256", "value": sha256.chars().take(16).collect::<String>(), "inline": false }
                 ]
             }
         ]

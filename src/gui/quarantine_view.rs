@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use egui::{Color32, RichText, Ui};
 use serde::{Deserialize, Serialize};
+use crate::actions::resolve_conflict;
+use crate::config::schema::ConflictResolution;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuarantineRecord {
@@ -43,6 +45,12 @@ impl QuarantineView {
                 if let Ok(content) = fs::read_to_string(&audit_log) {
                     for line in content.lines() {
                         if let Ok(rec) = serde_json::from_str::<QuarantineRecord>(line) {
+                            // The audit log is append-only, so it still lists files that have
+                            // since been restored or deleted. Showing those as quarantined
+                            // makes the vault's Restore and Delete buttons do nothing.
+                            if !Path::new(&rec.quarantined_path).exists() {
+                                continue;
+                            }
                             if !self.records.iter().any(|r| r.quarantined_path == rec.quarantined_path) {
                                 self.records.push(rec);
                             }
@@ -109,7 +117,8 @@ impl QuarantineView {
                             });
 
                             ui.label(format!("Original Location: {}", record.original_path));
-                            ui.label(format!("SHA-256: {}  |  Date: {}", &record.sha256[..record.sha256.len().min(16)], record.timestamp));
+                            let sha_short: String = record.sha256.chars().take(16).collect();
+                            ui.label(format!("SHA-256: {}  |  Date: {}", sha_short, record.timestamp));
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -128,14 +137,26 @@ impl QuarantineView {
             if let Some(idx) = record_to_restore {
                 let rec = &self.records[idx];
                 let src = PathBuf::from(&rec.quarantined_path);
-                let dest = PathBuf::from(&rec.original_path);
+                let original = PathBuf::from(&rec.original_path);
                 if src.exists() {
-                    if let Some(parent) = dest.parent() {
+                    if let Some(parent) = original.parent() {
                         let _ = fs::create_dir_all(parent);
                     }
-                    if fs::rename(&src, &dest).is_ok() || fs::copy(&src, &dest).is_ok() {
-                        let _ = fs::remove_file(&src);
-                        self.status_msg = Some(format!("Restored to {}", dest.display()));
+
+                    // Something else may occupy the original path by now; restoring on top of
+                    // it would destroy the user's current file without warning.
+                    match resolve_conflict(&original, ConflictResolution::RenameWithCounter) {
+                        Some(dest) => {
+                            if fs::rename(&src, &dest).is_ok() || fs::copy(&src, &dest).is_ok() {
+                                let _ = fs::remove_file(&src);
+                                self.status_msg = Some(format!("Restored to {}", dest.display()));
+                            } else {
+                                self.status_msg = Some(format!("Could not restore to {}", dest.display()));
+                            }
+                        }
+                        None => {
+                            self.status_msg = Some("Restore skipped: destination is occupied".to_string());
+                        }
                     }
                 }
                 self.reload(default_dir);

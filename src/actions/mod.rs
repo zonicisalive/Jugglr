@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{info, warn, error};
 
 use crate::config::expand_path;
@@ -23,6 +24,9 @@ pub struct ExecutionOutcome {
     pub target_path: Option<PathBuf>,
     pub action_type: ActionType,
     pub message: String,
+    /// Rule that produced this outcome. Stamped by `ActionExecutor::execute`; the private
+    /// per-action helpers leave it empty because they do not know it.
+    pub rule_name: String,
 }
 
 pub struct ActionExecutor;
@@ -42,6 +46,7 @@ impl ActionExecutor {
                 success: false,
                 source_path: source_path.to_path_buf(),
                 target_path: None,
+                rule_name: rule_name.to_string(),
                 action_type: action_cfg.action,
                 message: format!("Source file '{}' no longer exists", source_path.display()),
             });
@@ -67,7 +72,7 @@ impl ActionExecutor {
         }
 
         // 3. Dispatch primary action
-        let outcome = match action_cfg.action {
+        let mut outcome = match action_cfg.action {
             ActionType::Move => Self::execute_move_or_copy(action_cfg, source_path, context, true, dry_run)?,
             ActionType::Copy => Self::execute_move_or_copy(action_cfg, source_path, context, false, dry_run)?,
             ActionType::Rename => Self::execute_rename(action_cfg, source_path, context, dry_run)?,
@@ -82,10 +87,13 @@ impl ActionExecutor {
                 success: true,
                 source_path: source_path.to_path_buf(),
                 target_path: Some(source_path.to_path_buf()),
+                rule_name: String::new(),
                 action_type: ActionType::None,
                 message: "No action performed".to_string(),
             },
         };
+
+        outcome.rule_name = rule_name.to_string();
 
         // 4. Send desktop notification if configured (skip if dry_run)
         if !dry_run && action_cfg.notify && outcome.success {
@@ -124,12 +132,13 @@ impl ActionExecutor {
         dry_run: bool,
     ) -> io::Result<ExecutionOutcome> {
         let dest_str = match action_cfg.destination {
-            Some(ref d) => context.interpolate(d),
+            Some(ref d) => context.interpolate_path(d),
             None => {
                 return Ok(ExecutionOutcome {
                     success: false,
                     source_path: source.to_path_buf(),
                     target_path: None,
+                    rule_name: String::new(),
                     action_type: if is_move { ActionType::Move } else { ActionType::Copy },
                     message: "Destination path not specified".to_string(),
                 })
@@ -147,6 +156,7 @@ impl ActionExecutor {
                     success: true,
                     source_path: source.to_path_buf(),
                     target_path: None,
+                    rule_name: String::new(),
                     action_type: if is_move { ActionType::Move } else { ActionType::Copy },
                     message: "Skipped due to destination conflict".to_string(),
                 });
@@ -161,6 +171,7 @@ impl ActionExecutor {
                 success: true,
                 source_path: source.to_path_buf(),
                 target_path: Some(target.clone()),
+                rule_name: String::new(),
                 action_type: if is_move { ActionType::Move } else { ActionType::Copy },
                 message: format!("[DRY-RUN] Would {} to {}", action_name, target.display()),
             });
@@ -171,13 +182,10 @@ impl ActionExecutor {
         }
 
         if is_move {
-            if fs::rename(source, &target).is_err() {
-                fs::copy(source, &target)?;
-                fs::remove_file(source)?;
-            }
+            move_file_atomic(source, &target)?;
             info!("Moved {} -> {}", source.display(), target.display());
         } else {
-            fs::copy(source, &target)?;
+            copy_file_atomic(source, &target)?;
             info!("Copied {} -> {}", source.display(), target.display());
         }
 
@@ -185,6 +193,7 @@ impl ActionExecutor {
             success: true,
             source_path: source.to_path_buf(),
             target_path: Some(target.clone()),
+            rule_name: String::new(),
             action_type: if is_move { ActionType::Move } else { ActionType::Copy },
             message: format!("Successfully {}d to {}", action_name.to_lowercase(), target.display()),
         })
@@ -197,6 +206,7 @@ impl ActionExecutor {
                 success: true,
                 source_path: source.to_path_buf(),
                 target_path: None,
+                rule_name: String::new(),
                 action_type: ActionType::Trash,
                 message: "[DRY-RUN] Move to trash planned".to_string(),
             });
@@ -209,6 +219,7 @@ impl ActionExecutor {
             success: true,
             source_path: source.to_path_buf(),
             target_path: None,
+            rule_name: String::new(),
             action_type: ActionType::Trash,
             message: "Moved to trash".to_string(),
         })
@@ -221,7 +232,7 @@ impl ActionExecutor {
         dry_run: bool,
     ) -> io::Result<ExecutionOutcome> {
         let dest_str = match action_cfg.destination {
-            Some(ref d) => context.interpolate(d),
+            Some(ref d) => context.interpolate_path(d),
             None => {
                 let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("extracted");
                 let parent = source.parent().unwrap_or_else(|| Path::new("."));
@@ -237,6 +248,7 @@ impl ActionExecutor {
                 success: true,
                 source_path: source.to_path_buf(),
                 target_path: Some(target_dir),
+                rule_name: String::new(),
                 action_type: ActionType::Extract,
                 message: "[DRY-RUN] Extraction planned".to_string(),
             });
@@ -253,6 +265,7 @@ impl ActionExecutor {
             success: true,
             source_path: source.to_path_buf(),
             target_path: Some(target_dir.clone()),
+            rule_name: String::new(),
             action_type: ActionType::Extract,
             message: format!("Extracted to {}", target_dir.display()),
         })
@@ -266,12 +279,13 @@ impl ActionExecutor {
         dry_run: bool,
     ) -> io::Result<ExecutionOutcome> {
         let dest_str = match action_cfg.destination {
-            Some(ref d) => context.interpolate(d),
+            Some(ref d) => context.interpolate_path(d),
             None => {
                 return Ok(ExecutionOutcome {
                     success: false,
                     source_path: source.to_path_buf(),
                     target_path: None,
+                    rule_name: String::new(),
                     action_type: if is_symlink { ActionType::Symlink } else { ActionType::Hardlink },
                     message: "Link destination path missing".to_string(),
                 })
@@ -288,6 +302,7 @@ impl ActionExecutor {
                     success: true,
                     source_path: source.to_path_buf(),
                     target_path: None,
+                    rule_name: String::new(),
                     action_type: if is_symlink { ActionType::Symlink } else { ActionType::Hardlink },
                     message: "Link creation skipped due to conflict".to_string(),
                 });
@@ -302,6 +317,7 @@ impl ActionExecutor {
                 success: true,
                 source_path: source.to_path_buf(),
                 target_path: Some(target),
+                rule_name: String::new(),
                 action_type: if is_symlink { ActionType::Symlink } else { ActionType::Hardlink },
                 message: format!("[DRY-RUN] {} planned", link_type),
             });
@@ -323,6 +339,7 @@ impl ActionExecutor {
             success: true,
             source_path: source.to_path_buf(),
             target_path: Some(target.clone()),
+            rule_name: String::new(),
             action_type: if is_symlink { ActionType::Symlink } else { ActionType::Hardlink },
             message: format!("Created {} at {}", link_type, target.display()),
         })
@@ -335,27 +352,47 @@ impl ActionExecutor {
         dry_run: bool,
     ) -> io::Result<ExecutionOutcome> {
         let new_name_template = match action_cfg.destination {
-            Some(ref d) => context.interpolate(d),
+            Some(ref d) => context.interpolate_path(d),
             None => {
                 return Ok(ExecutionOutcome {
                     success: false,
                     source_path: source.to_path_buf(),
                     target_path: None,
+                    rule_name: String::new(),
                     action_type: ActionType::Rename,
                     message: "Rename destination template missing".to_string(),
                 })
             }
         };
 
+        // A rename produces a new name in the same directory, never a new location: keep only
+        // the final component so an absolute or `../` template cannot relocate the file.
+        let new_name = match Path::new(&new_name_template).file_name() {
+            Some(name) => name.to_owned(),
+            None => {
+                return Ok(ExecutionOutcome {
+                    success: false,
+                    source_path: source.to_path_buf(),
+                    target_path: None,
+                    rule_name: String::new(),
+                    action_type: ActionType::Rename,
+                    message: format!("Rename template '{}' does not produce a filename", new_name_template),
+                })
+            }
+        };
+
         let parent = source.parent().unwrap_or_else(|| Path::new("."));
-        let target_raw = parent.join(new_name_template);
-        let target = match resolve_target_path(source, &target_raw, action_cfg.conflict_resolution) {
+        let target_raw = parent.join(new_name);
+        // Rename targets a file by name, so the directory heuristic in `resolve_target_path`
+        // must not apply: `report` is a new name, not a folder to move the file into.
+        let target = match resolve_conflict(&target_raw, action_cfg.conflict_resolution) {
             Some(t) => t,
             None => {
                 return Ok(ExecutionOutcome {
                     success: true,
                     source_path: source.to_path_buf(),
                     target_path: None,
+                    rule_name: String::new(),
                     action_type: ActionType::Rename,
                     message: "Rename skipped due to conflict".to_string(),
                 })
@@ -368,6 +405,7 @@ impl ActionExecutor {
                 success: true,
                 source_path: source.to_path_buf(),
                 target_path: Some(target),
+                rule_name: String::new(),
                 action_type: ActionType::Rename,
                 message: "[DRY-RUN] Rename planned".to_string(),
             });
@@ -380,6 +418,7 @@ impl ActionExecutor {
             success: true,
             source_path: source.to_path_buf(),
             target_path: Some(target.clone()),
+            rule_name: String::new(),
             action_type: ActionType::Rename,
             message: format!("Renamed to {}", target.display()),
         })
@@ -392,6 +431,7 @@ impl ActionExecutor {
                 success: true,
                 source_path: source.to_path_buf(),
                 target_path: None,
+                rule_name: String::new(),
                 action_type: ActionType::Delete,
                 message: "[DRY-RUN] Delete planned".to_string(),
             });
@@ -404,6 +444,7 @@ impl ActionExecutor {
             success: true,
             source_path: source.to_path_buf(),
             target_path: None,
+            rule_name: String::new(),
             action_type: ActionType::Delete,
             message: "File deleted".to_string(),
         })
@@ -427,6 +468,7 @@ impl ActionExecutor {
             success: true,
             source_path: source.to_path_buf(),
             target_path: Some(target.clone()),
+            rule_name: String::new(),
             action_type: ActionType::Quarantine,
             message: format!("Quarantined to {}", target.display()),
         })
@@ -440,12 +482,13 @@ impl ActionExecutor {
         dry_run: bool,
     ) -> io::Result<ExecutionOutcome> {
         let script_cmd = match action_cfg.script {
-            Some(ref s) => context.interpolate(s),
+            Some(ref s) => context.interpolate_shell(s),
             None => {
                 return Ok(ExecutionOutcome {
                     success: false,
                     source_path: source.to_path_buf(),
                     target_path: None,
+                    rule_name: String::new(),
                     action_type: ActionType::Script,
                     message: "Script command is missing".to_string(),
                 })
@@ -458,6 +501,7 @@ impl ActionExecutor {
                 success: true,
                 source_path: source.to_path_buf(),
                 target_path: None,
+                rule_name: String::new(),
                 action_type: ActionType::Script,
                 message: "[DRY-RUN] Script execution planned".to_string(),
             });
@@ -488,10 +532,68 @@ impl ActionExecutor {
             success,
             source_path: source.to_path_buf(),
             target_path: None,
+            rule_name: String::new(),
             action_type: ActionType::Script,
             message: format!("Script finished with status {:?}", output.status.code()),
         })
     }
+}
+
+/// Upper bound on the `file (n).ext` search before giving up.
+const MAX_CONFLICT_CANDIDATES: u32 = 10_000;
+
+/// Counter making concurrent temp filenames distinct within one process.
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A temporary name in `dir`, hidden so the watcher's dotfile filter ignores it.
+fn temp_path_in(dir: &Path) -> PathBuf {
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(".jugglr-tmp-{}-{}", std::process::id(), n))
+}
+
+/// Copy `source` to `target` so that `target` never exists in a partially written state.
+///
+/// `fs::copy` writes straight into the destination name, so an interrupted copy (disk full,
+/// source truncated, two rules racing on one file) leaves a corrupt file sitting at the
+/// destination under its real name. Copying to a temporary name in the same directory and
+/// renaming into place makes the final step atomic: the destination either does not exist yet
+/// or is complete.
+pub fn copy_file_atomic(source: &Path, target: &Path) -> io::Result<()> {
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    let tmp = temp_path_in(dir);
+
+    match fs::copy(source, &tmp).and_then(|_| fs::rename(&tmp, target)) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Move `source` onto `target`, crossing filesystems when necessary.
+///
+/// `fs::rename` is atomic but only within one filesystem; ~/Downloads and the destination are
+/// frequently on different mounts. The fallback copies through a temporary name and only
+/// removes the source once the destination is complete and in place, so a failure anywhere
+/// leaves the original untouched rather than destroying it alongside a truncated copy.
+pub fn move_file_atomic(source: &Path, target: &Path) -> io::Result<()> {
+    if fs::rename(source, target).is_ok() {
+        return Ok(());
+    }
+
+    copy_file_atomic(source, target)?;
+
+    if let Err(e) = fs::remove_file(source) {
+        warn!(
+            "Copied {} to {} but could not remove the original: {}",
+            source.display(),
+            target.display(),
+            e
+        );
+    }
+
+    Ok(())
 }
 
 /// Resolves target path, handling directory vs file targets and conflict resolution policies.
@@ -513,27 +615,58 @@ pub fn resolve_target_path(
         target.to_path_buf()
     };
 
-    if !final_dest.exists() {
-        return Some(final_dest);
+    // Moving or linking a file onto itself is a no-op, not a conflict. Left to the conflict
+    // policy, `RenameWithCounter` would instead produce `file (1).ext` beside it, whose own
+    // MOVED_TO event re-enters the engine and yields `file (1) (1).ext`, and so on without end.
+    if is_same_file(source, &final_dest) {
+        return None;
+    }
+
+    resolve_conflict(&final_dest, conflict_resolution)
+}
+
+/// Whether two paths refer to the same existing file, comparing resolved locations rather than
+/// spelling (`dir/f` and `dir/./f` are the same file).
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
+}
+
+/// Apply a conflict resolution policy to an already-resolved destination file path.
+///
+/// Uses `symlink_metadata` rather than `exists()`: a dangling symlink at the destination is
+/// still an occupied name, and `exists()` follows the link and reports it as free.
+pub fn resolve_conflict(final_dest: &Path, conflict_resolution: ConflictResolution) -> Option<PathBuf> {
+    if fs::symlink_metadata(final_dest).is_err() {
+        return Some(final_dest.to_path_buf());
     }
 
     match conflict_resolution {
-        ConflictResolution::Overwrite => Some(final_dest),
+        ConflictResolution::Overwrite => Some(final_dest.to_path_buf()),
         ConflictResolution::Skip => None,
         ConflictResolution::RenameWithCounter => {
             let parent = final_dest.parent().unwrap_or_else(|| Path::new("."));
             let stem = final_dest.file_stem()?.to_string_lossy();
             let ext = final_dest.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
 
-            let mut counter = 1;
-            loop {
+            // Bounded: an unbounded search would spin forever if every candidate kept
+            // appearing to exist.
+            for counter in 1..=MAX_CONFLICT_CANDIDATES {
                 let candidate_name = format!("{} ({}){}", stem, counter, ext);
                 let candidate_path = parent.join(candidate_name);
-                if !candidate_path.exists() {
+                if fs::symlink_metadata(&candidate_path).is_err() {
                     return Some(candidate_path);
                 }
-                counter += 1;
             }
+
+            warn!(
+                "Giving up on a free name for {} after {} attempts",
+                final_dest.display(),
+                MAX_CONFLICT_CANDIDATES
+            );
+            None
         }
     }
 }

@@ -1,8 +1,17 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::LazyLock;
 use regex::Regex;
 use zip::ZipArchive;
+
+/// `name(){ name|name& };name` with the four name positions captured independently.
+static NAMED_FORKBOMB: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(
+        r"([a-zA-Z0-9_]+)\s*\(\s*\)\s*\{\s*([a-zA-Z0-9_]+)\s*\|\s*([a-zA-Z0-9_]+)\s*&\s*\}\s*;\s*([a-zA-Z0-9_]+)",
+    )
+    .ok()
+});
 
 /// Detects fork bombs across Bash, Python, Batch, C, Perl, and Ruby scripts.
 pub fn detect_forkbomb(path: &Path) -> Option<String> {
@@ -19,10 +28,15 @@ pub fn detect_forkbomb(path: &Path) -> Option<String> {
         return Some("Classic Bash Fork Bomb (:(){ :|:& };:)".to_string());
     }
 
-    // Generic Bash function calling itself piped into itself in background
-    if let Ok(bash_fork_re) = Regex::new(r#"([a-zA-Z0-9_]+)\s*\(\s*\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1"#) {
-        if bash_fork_re.is_match(&content_lossy) {
-            return Some("Custom Named Bash Fork Bomb".to_string());
+    // Generic Bash function calling itself piped into itself in background.
+    // The `regex` crate has no backreferences, so the four occurrences of the function name are
+    // captured separately and compared here.
+    if let Some(re) = NAMED_FORKBOMB.as_ref() {
+        for caps in re.captures_iter(&content_lossy) {
+            let name = &caps[1];
+            if &caps[2] == name && &caps[3] == name && &caps[4] == name {
+                return Some("Custom Named Bash Fork Bomb".to_string());
+            }
         }
     }
 
@@ -140,11 +154,12 @@ pub fn detect_invisible_unicode(filename: &str, path: Option<&Path>) -> Option<S
         if let Ok(file) = File::open(p) {
             let mut buffer = Vec::new();
             if file.take(64 * 1024).read_to_end(&mut buffer).is_ok() {
-                if let Ok(text) = std::str::from_utf8(&buffer) {
-                    for (ch, name) in &invisible_chars {
-                        if text.contains(*ch) {
-                            return Some(format!("Hidden zero-width payload: {}", name));
-                        }
+                // Lossy: a strict decode fails on the first stray byte, which would skip the
+                // scan entirely on mixed binary/text files that hide payloads.
+                let text = String::from_utf8_lossy(&buffer);
+                for (ch, name) in &invisible_chars {
+                    if text.contains(*ch) {
+                        return Some(format!("Hidden zero-width payload: {}", name));
                     }
                 }
             }
@@ -251,4 +266,32 @@ pub fn detect_polyglot_payload(path: &Path) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_temp(name: &str, body: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("jugglr_threats_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        File::create(&path).unwrap().write_all(body.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn detects_named_fork_bomb_without_backreferences() {
+        let bomb = write_temp("bomb.sh", "#!/bin/bash
+boom(){ boom|boom& };boom
+");
+        assert_eq!(detect_forkbomb(&bomb), Some("Custom Named Bash Fork Bomb".to_string()));
+
+        // Same shape, different names in each position: not a self-recursive bomb.
+        let benign = write_temp("benign.sh", "#!/bin/bash
+start(){ left|right& };other
+");
+        assert_eq!(detect_forkbomb(&benign), None);
+    }
 }

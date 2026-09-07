@@ -3,6 +3,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::LazyLock;
 use std::time::SystemTime;
 use glob::Pattern;
 use regex::Regex;
@@ -61,7 +62,7 @@ impl ConditionEvaluator {
 
         // 1. Extension check
         if let Some(ref exts) = group.extensions {
-            let matched = exts.iter().any(|ext| ext.trim_start_matches('.').eq_ignore_ascii_case(&extension));
+            let matched = exts.iter().any(|ext| matches_extension(filename, &extension, ext));
             if group.match_mode == MatchMode::All && !matched {
                 return Ok(EvaluationResult { matched: false, ..Default::default() });
             }
@@ -475,7 +476,9 @@ impl ConditionEvaluator {
             }
         };
 
-        if cached_mime.is_none() {
+        // Only pay for magic-byte detection when the caller will actually use the result;
+        // this runs for every file in a watched directory.
+        if matched && cached_mime.is_none() {
             cached_mime = detect_mime(path).ok();
         }
 
@@ -495,11 +498,32 @@ impl ConditionEvaluator {
 }
 
 /// Helper to read text content up to max_bytes.
+///
+/// Decoded lossily on purpose. A strict UTF-8 decode fails on any binary file and on any text
+/// file whose `max_bytes` cut lands mid-codepoint, which would silently disable every
+/// content-based check (secrets, keywords, malware strings) exactly on the files most worth
+/// scanning.
 fn read_file_prefix_or_content(path: &Path, max_bytes: usize) -> io::Result<String> {
     let file = File::open(path)?;
     let mut buffer = Vec::new();
     file.take(max_bytes as u64).read_to_end(&mut buffer)?;
-    String::from_utf8(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+}
+
+/// Match one configured extension against a filename.
+///
+/// `Path::extension` only ever yields the final segment, so a configured `tar.gz` would never
+/// match `backup.tar.gz`. Compound suffixes are matched against the filename tail instead.
+fn matches_extension(filename: &str, final_extension: &str, configured: &str) -> bool {
+    let want = configured.trim_start_matches('.');
+    if want.is_empty() {
+        return false;
+    }
+    if want.eq_ignore_ascii_case(final_extension) {
+        return true;
+    }
+    let suffix = format!(".{}", want.to_lowercase());
+    filename.to_lowercase().ends_with(&suffix)
 }
 
 /// Detects deceptive double extensions like `resume.pdf.sh`, `invoice.docx.py`, `doc.pdf.exe`,
@@ -592,6 +616,47 @@ pub fn is_suspicious_desktop_file(path: &Path) -> bool {
     false
 }
 
+/// Compiled once: these run on every file a `contains_secrets` rule inspects, and rebuilding
+/// a dozen regexes per file is the single hottest cost in the scanner.
+static SECRET_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+    let sources: [(&str, &str); 9] = [
+        (r"(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}", "AWS Access Key ID"),
+        (r"AIza[0-9A-Za-z_-]{35}", "Google Cloud / Firebase API Key"),
+        (r"gh[pousr]_[A-Za-z0-9_]{36,255}|github_pat_[A-Za-z0-9_]{82}", "GitHub Personal Access Token"),
+        (r"glpat-[0-9a-zA-Z_-]{20,}", "GitLab Personal Access Token"),
+        (r"xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*|https://hooks\.slack\.com/services/T[0-9A-Z_]+/B[0-9A-Z_]+/[0-9A-Za-z]+", "Slack API Token / Webhook"),
+        (r"sk-ant-[a-zA-Z0-9_\-]{32,}", "Anthropic API Key"),
+        (r"sk-(?:proj-)?[A-Za-z0-9_\-]{32,}", "OpenAI API Key"),
+        (r"(?:sk|rk)_live_[0-9a-zA-Z]{24,}", "Stripe Live Secret Key"),
+        (r"(?i)(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis)://[^:\s]+:[^@\s]+@[^/\s]+", "Database Connection String with Credentials"),
+    ];
+
+    sources
+        .iter()
+        .filter_map(|(pattern, label)| match Regex::new(pattern) {
+            Ok(re) => Some((re, *label)),
+            Err(e) => {
+                // A malformed literal here is a build-time mistake, not a runtime condition.
+                debug_assert!(false, "invalid secret pattern {}: {}", pattern, e);
+                None
+            }
+        })
+        .collect()
+});
+
+static GENERIC_SECRET_PATTERN: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(?:api_key|apikey|secret_key|app_secret|auth_token|bearer_token|access_token)\s*=\s*['"]?([A-Za-z0-9_\-]{20,})['"]?"#).ok()
+});
+
+const PRIVATE_KEY_HEADERS: [&str; 6] = [
+    "-----BEGIN PRIVATE KEY-----",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "-----BEGIN EC PRIVATE KEY-----",
+    "-----BEGIN DSA PRIVATE KEY-----",
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+];
+
 /// Scans file content for common leaked secrets (AWS, GCP, GitHub, Slack, Discord, OpenAI, Stripe, Private Keys).
 pub fn scan_for_secrets(path: &Path) -> Option<String> {
     let content = match read_file_prefix_or_content(path, 256 * 1024) {
@@ -599,79 +664,41 @@ pub fn scan_for_secrets(path: &Path) -> Option<String> {
         Err(_) => return None,
     };
 
-    if let Ok(re) = Regex::new(r"(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}") {
-        if re.is_match(&content) {
-            return Some("AWS Access Key ID".to_string());
-        }
-    }
-
-    if let Ok(re) = Regex::new(r"AIza[0-9A-Za-z\\-_]{35}") {
-        if re.is_match(&content) {
-            return Some("Google Cloud / Firebase API Key".to_string());
-        }
-    }
-
-    if content.contains("-----BEGIN PRIVATE KEY-----")
-        || content.contains("-----BEGIN RSA PRIVATE KEY-----")
-        || content.contains("-----BEGIN OPENSSH PRIVATE KEY-----")
-        || content.contains("-----BEGIN EC PRIVATE KEY-----")
-        || content.contains("-----BEGIN DSA PRIVATE KEY-----")
-        || content.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----")
-    {
+    // Cheap substring checks first, before touching the regex engine.
+    if PRIVATE_KEY_HEADERS.iter().any(|header| content.contains(header)) {
         return Some("Cryptographic Private Key".to_string());
-    }
-
-    if let Ok(re) = Regex::new(r"gh[pousr]_[A-Za-z0-9_]{36,255}|github_pat_[A-Za-z0-9_]{82}") {
-        if re.is_match(&content) {
-            return Some("GitHub Personal Access Token".to_string());
-        }
-    }
-
-    if let Ok(re) = Regex::new(r"glpat-[0-9a-zA-Z\\-_]{20,}") {
-        if re.is_match(&content) {
-            return Some("GitLab Personal Access Token".to_string());
-        }
-    }
-
-    if let Ok(re) = Regex::new(r"xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*|https://hooks\.slack\.com/services/T[0-9A-Z_]+/B[0-9A-Z_]+/[0-9A-Za-z]+") {
-        if re.is_match(&content) {
-            return Some("Slack API Token / Webhook".to_string());
-        }
     }
 
     if content.contains("https://discord.com/api/webhooks/") || content.contains("https://discordapp.com/api/webhooks/") {
         return Some("Discord Webhook URL".to_string());
     }
 
-    if let Ok(re) = Regex::new(r"sk-(?:proj-)?[A-Za-z0-9_\-]{32,}") {
+    for (re, label) in SECRET_PATTERNS.iter() {
         if re.is_match(&content) {
-            return Some("OpenAI API Key".to_string());
+            return Some(label.to_string());
         }
     }
 
-    if let Ok(re) = Regex::new(r"sk-ant-[a-zA-Z0-9_\-]{32,}") {
-        if re.is_match(&content) {
-            return Some("Anthropic API Key".to_string());
-        }
-    }
-
-    if let Ok(re) = Regex::new(r"(?:sk|rk)_live_[0-9a-zA-Z]{24,}") {
-        if re.is_match(&content) {
-            return Some("Stripe Live Secret Key".to_string());
-        }
-    }
-
-    if let Ok(re) = Regex::new(r#"(?i)(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis)://[^:]+:[^@]+@[^/]+"#) {
-        if re.is_match(&content) {
-            return Some("Database Connection String with Credentials".to_string());
-        }
-    }
-
-    if let Ok(re) = Regex::new(r#"(?i)(?:api_key|apikey|secret_key|app_secret|auth_token|bearer_token|access_token)\s*=\s*['"]?([A-Za-z0-9_\-]{20,})['"]?"#) {
+    if let Some(re) = GENERIC_SECRET_PATTERN.as_ref() {
         if re.is_match(&content) {
             return Some("Generic API / Secret Key".to_string());
         }
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compound_extensions_match_the_filename_tail() {
+        assert!(matches_extension("backup.tar.gz", "gz", "tar.gz"));
+        assert!(matches_extension("backup.tar.gz", "gz", "gz"));
+        assert!(matches_extension("report.PDF", "pdf", ".pdf"));
+        assert!(!matches_extension("backup.tar.gz", "gz", "zip"));
+        assert!(!matches_extension("notes.gz", "gz", "tar.gz"));
+        assert!(!matches_extension("anything", "", ""));
+    }
 }

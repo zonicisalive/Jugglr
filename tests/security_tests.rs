@@ -90,3 +90,111 @@ fn test_quarantine_action_and_audit_log() {
     assert!(log_content.contains("trojan.pdf.sh"));
     assert!(log_content.contains("Deceptive double extension"));
 }
+
+#[test]
+fn test_script_action_cannot_be_injected_via_filename() {
+    let dir = tempdir().unwrap();
+    // A filename an attacker controls, carrying a shell command break-out. No quotes of its
+    // own: the template does not quote the placeholder, so bare `;` is enough.
+    let source = dir.path().join("photo; touch pwned; echo x.jpg");
+    let canary = dir.path().join("pwned");
+    File::create(&source).unwrap();
+
+    let action_cfg = jugglr::config::schema::ActionConfig {
+        action: jugglr::config::schema::ActionType::Script,
+        script: Some(format!("cd {} && echo {{filename}} > handled.log", dir.path().display())),
+        ..Default::default()
+    };
+
+    let ctx = jugglr::engine::variables::ContextVariables::from_file(&source, None, None, None);
+    jugglr::actions::ActionExecutor::execute(&action_cfg, &source, &ctx, "/tmp", "Injection", false).unwrap();
+
+    assert!(!canary.exists(), "filename must not be able to run commands of its own");
+    let logged = fs::read_to_string(dir.path().join("handled.log")).unwrap();
+    assert!(logged.contains("photo"), "the real filename should still reach the script");
+}
+
+#[test]
+fn test_move_destination_cannot_escape_via_metadata() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("track.mp3");
+    File::create(&source).unwrap();
+
+    let mut ctx = jugglr::engine::variables::ContextVariables::new();
+    ctx.insert("music_artist", "../..");
+
+    let dest_root = dir.path().join("Music");
+    let action_cfg = jugglr::config::schema::ActionConfig {
+        action: jugglr::config::schema::ActionType::Move,
+        destination: Some(format!("{}/{{music_artist}}/", dest_root.display())),
+        ..Default::default()
+    };
+
+    let outcome =
+        jugglr::actions::ActionExecutor::execute(&action_cfg, &source, &ctx, "/tmp", "Escape", false).unwrap();
+
+    assert!(outcome.success, "{}", outcome.message);
+
+    // Compare resolved paths: `Music/../../track.mp3` starts_with `Music/` lexically while
+    // actually landing two directories above it.
+    let landed = outcome.target_path.unwrap().canonicalize().unwrap();
+    let dest_root = dest_root.canonicalize().unwrap();
+    assert!(landed.starts_with(&dest_root), "file escaped to {}", landed.display());
+}
+
+#[test]
+fn test_rename_stays_in_the_source_directory() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("report.pdf");
+    File::create(&source).unwrap();
+
+    let action_cfg = jugglr::config::schema::ActionConfig {
+        action: jugglr::config::schema::ActionType::Rename,
+        destination: Some("../../owned.pdf".to_string()),
+        ..Default::default()
+    };
+
+    let ctx = jugglr::engine::variables::ContextVariables::from_file(&source, None, None, None);
+    let outcome =
+        jugglr::actions::ActionExecutor::execute(&action_cfg, &source, &ctx, "/tmp", "Rename", false).unwrap();
+
+    assert!(outcome.success);
+    assert_eq!(outcome.target_path.unwrap(), dir.path().join("owned.pdf"));
+}
+
+#[test]
+fn test_rename_to_a_name_without_an_extension() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("scan001.pdf");
+    File::create(&source).unwrap();
+
+    let action_cfg = jugglr::config::schema::ActionConfig {
+        action: jugglr::config::schema::ActionType::Rename,
+        destination: Some("invoice_archive".to_string()),
+        ..Default::default()
+    };
+
+    let ctx = jugglr::engine::variables::ContextVariables::from_file(&source, None, None, None);
+    let outcome =
+        jugglr::actions::ActionExecutor::execute(&action_cfg, &source, &ctx, "/tmp", "Rename", false).unwrap();
+
+    assert!(outcome.success, "{}", outcome.message);
+    let target = dir.path().join("invoice_archive");
+    assert!(target.is_file(), "a dotless rename target is a filename, not a folder");
+}
+
+#[test]
+fn test_secret_scan_reads_files_that_are_not_valid_utf8() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("payload.bin");
+    let mut f = File::create(&path).unwrap();
+    f.write_all(&[0xff, 0xfe, 0x00]).unwrap();
+    f.write_all(b"-----BEGIN RSA PRIVATE KEY-----").unwrap();
+    f.write_all(&[0x80, 0x81]).unwrap();
+
+    assert_eq!(
+        scan_for_secrets(&path),
+        Some("Cryptographic Private Key".to_string()),
+        "binary files must still be scanned for secrets"
+    );
+}

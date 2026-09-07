@@ -1,7 +1,36 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::LazyLock;
 use regex::Regex;
+
+/// Compiled once rather than per scanned file.
+static REVERSE_SHELL_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+    let sources: [(&str, &str); 8] = [
+        (r#"bash\s+-i\s+>&?\s*/dev/tcp/"#, "Bash /dev/tcp Interactive Reverse Shell"),
+        (r#"sh\s+-i\s+>&?\s*/dev/tcp/"#, "Sh /dev/tcp Interactive Reverse Shell"),
+        (r#"exec\s+\d+<>/dev/tcp/"#, "File Descriptor /dev/tcp Reverse Shell"),
+        (r#"nc(?:at)?\s+(?:-[a-z]*e|--exec)\s+/(?:bin/)?(?:ba)?sh"#, "Netcat Interactive Reverse Shell (-e)"),
+        (r#"socat\s+.*exec:\s*['"]?(?:/bin/)?(?:ba)?sh"#, "Socat PTY Reverse Shell"),
+        (r#"python(?:\d)?\s+-c\s+['"]import\s+socket,subprocess,os;s=socket\.socket"#, "Python Socket Reverse Shell One-Liner"),
+        (r#"perl\s+-e\s+['"]use\s+Socket;\$i="#, "Perl Socket Reverse Shell"),
+        (r#"ruby\s+-rsocket\s+-e\s*['"]f=TCPSocket\.open"#, "Ruby Socket Reverse Shell"),
+    ];
+
+    sources
+        .iter()
+        .filter_map(|(pattern, label)| match Regex::new(pattern) {
+            Ok(re) => Some((re, *label)),
+            Err(e) => {
+                debug_assert!(false, "invalid signature pattern {}: {}", pattern, e);
+                None
+            }
+        })
+        .collect()
+});
+
+/// The EICAR antivirus test string, matched verbatim.
+const EICAR_SIGNATURE: &str = r"X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
 
 /// Scan file content for known malware signatures, web shells, reverse shells, and exploit payloads.
 pub fn scan_malware_signatures(path: &Path) -> Option<String> {
@@ -16,14 +45,14 @@ pub fn scan_malware_signatures(path: &Path) -> Option<String> {
         return None;
     }
 
-    // 1. EICAR Standard Antivirus Test String Check
-    if buffer.windows(68).any(|w| w == b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*") {
-        return Some("EICAR Standard Antivirus Test Signature".to_string());
-    }
-
-    // 2. Binary / Text inspections
+    // 1. Binary / Text inspections
     let content_lossy = String::from_utf8_lossy(&buffer);
     let content_lower = content_lossy.to_lowercase();
+
+    // 2. EICAR Standard Antivirus Test String Check
+    if content_lossy.contains(EICAR_SIGNATURE) {
+        return Some("EICAR Standard Antivirus Test Signature".to_string());
+    }
 
     // 3. Web Shell Backdoors (PHP, JSP, ASPX, Node, Python)
     let webshell_signatures = [
@@ -53,22 +82,9 @@ pub fn scan_malware_signatures(path: &Path) -> Option<String> {
     }
 
     // 4. Linux Reverse Shells & Malicious Command Cradles
-    let reverse_shell_patterns: [(&str, &str); 8] = [
-        (r#"bash\s+-i\s+>&?\s*/dev/tcp/"#, "Bash /dev/tcp Interactive Reverse Shell"),
-        (r#"sh\s+-i\s+>&?\s*/dev/tcp/"#, "Sh /dev/tcp Interactive Reverse Shell"),
-        (r#"exec\s+\d+<>/dev/tcp/"#, "File Descriptor /dev/tcp Reverse Shell"),
-        (r#"nc(?:at)?\s+(?:-[a-z]*e|--exec)\s+/(?:bin/)?(?:ba)?sh"#, "Netcat Interactive Reverse Shell (-e)"),
-        (r#"socat\s+.*exec:\s*['"]?(?:/bin/)?(?:ba)?sh"#, "Socat PTY Reverse Shell"),
-        (r#"python(?:\d)?\s+-c\s+['"]import\s+socket,subprocess,os;s=socket\.socket"#, "Python Socket Reverse Shell One-Liner"),
-        (r#"perl\s+-e\s+['"]use\s+Socket;\$i="#, "Perl Socket Reverse Shell"),
-        (r#"ruby\s+-rsocket\s+-e\s*['"]f=TCPSocket\.open"#, "Ruby Socket Reverse Shell"),
-    ];
-
-    for (pattern, label) in reverse_shell_patterns {
-        if let Ok(re) = Regex::new(pattern) {
-            if re.is_match(&content_lossy) {
-                return Some(label.to_string());
-            }
+    for (re, label) in REVERSE_SHELL_PATTERNS.iter() {
+        if re.is_match(&content_lossy) {
+            return Some(label.to_string());
         }
     }
 
@@ -85,4 +101,32 @@ pub fn scan_malware_signatures(path: &Path) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn detects_eicar_and_leaves_clean_files_alone() {
+        let dir = std::env::temp_dir().join(format!("jugglr_sig_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let infected = dir.join("eicar.com");
+        let mut f = File::create(&infected).unwrap();
+        f.write_all(EICAR_SIGNATURE.as_bytes()).unwrap();
+        assert_eq!(
+            scan_malware_signatures(&infected),
+            Some("EICAR Standard Antivirus Test Signature".to_string())
+        );
+
+        // Binary content must still be scanned, not skipped as "not text".
+        let clean = dir.join("clean.bin");
+        let mut f = File::create(&clean).unwrap();
+        f.write_all(&[0x7f, b'E', b'L', b'F', 0x00, 0xff, 0xfe]).unwrap();
+        assert_eq!(scan_malware_signatures(&clean), None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

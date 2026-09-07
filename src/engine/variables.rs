@@ -115,13 +115,131 @@ impl ContextVariables {
         ctx
     }
 
-    /// Interpolate template string replacing `{key}` with corresponding context value.
-    pub fn interpolate(&self, template: &str) -> String {
-        let mut result = template.to_string();
-        for (key, val) in &self.values {
-            let placeholder = format!("{{{}}}", key);
-            result = result.replace(&placeholder, val);
+    /// Interpolate `{key}` placeholders, passing every substituted value through `transform`.
+    ///
+    /// A single left-to-right pass: substituted values are never rescanned, so a filename or
+    /// ID3 tag containing `{sha256}` cannot trigger a second round of substitution. Unknown
+    /// keys are left in place verbatim.
+    fn interpolate_with(&self, template: &str, transform: impl Fn(&str) -> String) -> String {
+        let mut out = String::with_capacity(template.len());
+        let mut rest = template;
+
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            rest = &rest[open..];
+
+            match rest[1..].find('}') {
+                Some(rel_close) => {
+                    let key = &rest[1..1 + rel_close];
+                    match self.values.get(key) {
+                        Some(val) => out.push_str(&transform(val)),
+                        None => out.push_str(&rest[..=1 + rel_close]),
+                    }
+                    rest = &rest[rel_close + 2..];
+                }
+                None => break,
+            }
         }
-        result
+
+        out.push_str(rest);
+        out
+    }
+
+    /// Interpolate for display purposes (log lines, desktop notifications, webhook bodies).
+    /// Values are inserted verbatim; never use this to build a path or a shell command.
+    pub fn interpolate(&self, template: &str) -> String {
+        self.interpolate_with(template, |val| val.to_string())
+    }
+
+    /// Interpolate into a filesystem path template.
+    ///
+    /// Most context values come from untrusted file content (EXIF, ID3 tags, regex captures on
+    /// attacker-chosen filenames). A value like `../../.ssh` would otherwise escape the
+    /// configured destination tree, so every substituted value is reduced to a single, inert
+    /// path component. Separators written literally in the template are preserved.
+    pub fn interpolate_path(&self, template: &str) -> String {
+        self.interpolate_with(template, |val| sanitize_path_component(val))
+    }
+
+    /// Interpolate into a shell command template, quoting each substituted value so that
+    /// attacker-controlled metadata cannot break out and run commands of its own.
+    pub fn interpolate_shell(&self, template: &str) -> String {
+        self.interpolate_with(template, |val| shell_quote(val))
+    }
+}
+
+/// Reduce an untrusted value to a single path component that cannot traverse directories.
+pub fn sanitize_path_component(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | '\0' => '_',
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect();
+
+    let trimmed = cleaned.trim();
+
+    // "", ".", ".." and friends are not usable component names.
+    if trimmed.is_empty() || trimmed.chars().all(|c| c == '.') {
+        return "_".to_string();
+    }
+
+    trimmed.to_string()
+}
+
+/// POSIX single-quote a value for safe inclusion in a `bash -c` command string.
+pub fn shell_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_interpolation_cannot_escape_destination() {
+        let mut ctx = ContextVariables::new();
+        ctx.insert("music_artist", "../../.ssh");
+        ctx.insert("music_album", "a/b");
+        assert_eq!(
+            ctx.interpolate_path("~/Music/{music_artist}/{music_album}/x.mp3"),
+            "~/Music/.._.._.ssh/a_b/x.mp3"
+        );
+    }
+
+    #[test]
+    fn shell_interpolation_quotes_injected_commands() {
+        let mut ctx = ContextVariables::new();
+        ctx.insert("filename", "x; rm -rf ~; it's.jpg");
+        assert_eq!(
+            ctx.interpolate_shell("convert {filename} out.png"),
+            "convert 'x; rm -rf ~; it'\\''s.jpg' out.png"
+        );
+    }
+
+    #[test]
+    fn substituted_values_are_not_rescanned() {
+        let mut ctx = ContextVariables::new();
+        ctx.insert("stem", "{sha256}");
+        ctx.insert("sha256", "deadbeef");
+        assert_eq!(ctx.interpolate("{stem}"), "{sha256}");
+    }
+
+    #[test]
+    fn unknown_placeholders_are_left_intact() {
+        let ctx = ContextVariables::new();
+        assert_eq!(ctx.interpolate("a{nope}b{"), "a{nope}b{");
     }
 }

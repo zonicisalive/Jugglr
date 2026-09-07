@@ -1,14 +1,14 @@
 pub mod debouncer;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::expand_path;
 use crate::engine::RuleEngine;
@@ -53,11 +53,15 @@ impl WatcherService {
             }
         }
 
+        // Keep the watch descriptor for each directory: inotify reports only the bare filename,
+        // so the descriptor is the only reliable way to know which watched directory it is in.
+        let mut dir_by_wd = HashMap::new();
         for dir in &watched_dirs {
             let mask = WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO;
             match inotify.watches().add(dir, mask) {
                 Ok(wd) => {
                     info!("👀 Inotify watching: {} (wd: {:?})", dir.display(), wd);
+                    dir_by_wd.insert(wd, dir.clone());
                 }
                 Err(e) => {
                     warn!("Failed to add inotify watch on {}: {}", dir.display(), e);
@@ -69,14 +73,40 @@ impl WatcherService {
             warn!("No active watch directories found in rules configuration!");
         }
 
-        // Spawn worker task to process debounced files without blocking Tokio async executor
+        // Spawn worker task to process debounced files without blocking Tokio async executor.
+        //
+        // Paths already being processed are skipped. The debouncer only dedups paths still
+        // waiting to settle: once a path is handed over, a fresh event for it settles again and
+        // would start a second task on the same file. Two concurrent runs both find the
+        // destination free, both resolve to the same target, and then both write to it —
+        // producing a duplicate move and a corrupt destination.
         let engine_clone = Arc::clone(&self.engine);
+        let in_flight: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
         tokio::spawn(async move {
             while let Some(file_path) = settled_rx.recv().await {
+                match in_flight.lock() {
+                    Ok(mut set) => {
+                        if !set.insert(file_path.clone()) {
+                            debug!("Already processing {}, skipping duplicate event", file_path.display());
+                            continue;
+                        }
+                    }
+                    Err(_) => {
+                        error!("In-flight tracking lock poisoned; refusing to process concurrently");
+                        continue;
+                    }
+                }
+
                 let eng_arc = Arc::clone(&engine_clone);
+                let done = Arc::clone(&in_flight);
+                let path_for_task = file_path.clone();
                 tokio::task::spawn_blocking(move || {
                     let eng = eng_arc.blocking_read();
-                    eng.process_file(&file_path);
+                    eng.process_file(&path_for_task);
+                    drop(eng);
+                    if let Ok(mut set) = done.lock() {
+                        set.remove(&path_for_task);
+                    }
                 });
             }
         });
@@ -97,13 +127,13 @@ impl WatcherService {
                             continue;
                         }
 
-                        // Reconstruct full path for the event
-                        // Find matching watch directory
-                        for dir in &watched_dirs {
+                        // Reconstruct the full path from the directory this event came from.
+                        // Matching by filename against every watched directory would attribute
+                        // the event to whichever directory happens to hold a same-named file.
+                        if let Some(dir) = dir_by_wd.get(&event.wd) {
                             let candidate = dir.join(&*filename_str);
                             if candidate.exists() {
                                 let _ = debouncer_tx.send(candidate).await;
-                                break;
                             }
                         }
                     }

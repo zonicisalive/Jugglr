@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let path = entry.path();
                 if path.is_file() {
                     processed_count += 1;
-                    let outcomes = engine.process_file(&path);
+                    let outcomes = engine.process_file_with(&path, false);
                     if !outcomes.is_empty() {
                         matched_count += 1;
                         let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown");
@@ -211,8 +211,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     if errs.is_empty() {
                         let mut eng = engine_for_reload.write().await;
                         let count = new_cfg.rules.len();
+
+                        // inotify watches are registered once at startup, so a reload picks up
+                        // new conditions and actions but not new directories to watch.
+                        let watch_dirs_of = |cfg: &jugglr::config::schema::Config| {
+                            cfg.rules
+                                .iter()
+                                .filter(|r| r.enabled)
+                                .map(|r| r.watch_dir.clone())
+                                .collect::<std::collections::BTreeSet<_>>()
+                        };
+                        let watch_dirs_changed = watch_dirs_of(eng.config()) != watch_dirs_of(&new_cfg);
+
                         eng.update_config(new_cfg);
                         info!("✅ Configuration successfully reloaded with {} active rules", count);
+
+                        if watch_dirs_changed {
+                            warn!("⚠️ Watched directories changed: restart jugglr for the new folders to be monitored");
+                        }
                     } else {
                         warn!("⚠️ Reload skipped due to {} validation errors", errs.len());
                     }
